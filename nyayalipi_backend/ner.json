@@ -1,0 +1,154 @@
+{
+  "COURT": [
+    "\\bSupreme Court\\b",
+    "\\bHigh Court\\b",
+    "\\bDistrict Court\\b",
+    "\\bSessions Court\\b",
+    "\\bMagistrate Court\\b",
+    "\\bFamily Court\\b",
+    "\\bConsumer Forum\\b",
+    "\\bTribunal\\b",
+    "\\bNational Commission\\b",
+    "\\bState Commission\\b",
+
+    "\\bCivil Court\\b",
+    "\\bAppellate Court\\b",
+    "\\bTrial Court\\b",
+    "\\bCourt of the District Judge\\b",
+    "\\bHon'?ble High Court\\b",
+    "\\bLearned District Judge\\b"
+  ],
+
+  "SECTION": [
+    "\\bSection\\s+\\d+[A-Za-z]?\\b",
+    "\\bSec\\.\\s*\\d+\\b",
+    "\\bArticle\\s+\\d+\\b",
+    "\\bClause\\s+\\d+\\b",
+    "\\bOrder\\s+\\w+\\s+Rule\\s+\\d+\\b",
+    "\\bRule\\s+\\d+\\b",
+
+    "\\bOrder\\s+\\d+\\b",
+    "\\bRule\\s+\\d+[A-Za-z]?\\b",
+    "\\bSection\\s+\\d+\\([a-zA-Z]\\)\\b"
+  ],
+
+  "ACT": [
+    "\\b[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*\\s+Act(?:,\\s*\\d{4})?\\b",
+    "\\bIPC\\b",
+    "\\bCrPC\\b",
+    "\\bCPC\\b",
+    "\\bIEA\\b",
+    "\\bNDPS Act\\b",
+
+    "\\bCode of Civil Procedure\\b",
+    "\\bIndian Contract Act\\b",
+    "\\bCompanies Act\\b",
+    "\\bLimitation Act\\b",
+    "\\bSpecific Relief Act\\b"
+  ],
+
+  "CASE_REF": [
+    "\\bAIR\\s+\\d{4}\\s+[A-Z]+\\s+\\d+\\b",
+    "\\b\\(\\d{4}\\)\\s+\\d+\\s+SCC\\s+\\d+\\b",
+    "\\bWrit\\s+Petition\\s+(?:Civil|Criminal)?\\s*No\\.\\s*\\d+\\b",
+    "\\bCriminal\\s+Appeal\\s+No\\.\\s*\\d+\\b",
+
+    "\\bCivil\\s+Appeal\\s+No\\.\\s*\\d+\\/?\\d*\\b",
+    "\\bRegular\\s+Civil\\s+Appeal\\s+No\\.\\s*\\d+\\b",
+    "\\bSuit\\s+No\\.\\s*\\d+\\b",
+    "\\bCase\\s+No\\.\\s*\\d+\\b"
+  ],
+
+  "PERSON_ROLE": [
+    "\\bpetitioner\\b",
+    "\\brespondent\\b",
+    "\\bappellant\\b",
+    "\\bdefendant\\b",
+    "\\bplaintiff\\b",
+    "\\baccused\\b",
+    "\\bcomplainant\\b",
+    "\\bwitness\\b",
+    "\\bdeponent\\b",
+
+    "\\bappellant\\s*-\\s*company\\b",
+    "\\brespondents?\\b",
+    "\\badvocate\\b",
+    "\\bcounsel\\b",
+    "\\bjudge\\b",
+    "\\bdistrict judge\\b",
+    "\\bchief justice\\b",
+
+    "\\blandlord\\b",
+    "\\btenant\\b",
+    "\\blessor\\b",
+    "\\blessee\\b",
+    "\\blicensor\\b",
+    "\\blicensee\\b"
+  ],
+
+  "DATE": [
+    "\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December),?\\s+\\d{4}\\b",
+    "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b",
+
+    "\\b\\d{1,2}\\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d{4}\\b",
+    "\\bdated\\s+\\d{1,2}(?:st|nd|rd|th)?\\s+\\w+\\s+\\d{4}\\b"
+  ],
+
+  "MONEY": [
+    "\\bRs\\.?\\s?\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?\\b",
+    "\\bRupees\\s+\\d+(?:,\\d{3})*\\b",
+    "\\b\\d+\\s*lakh\\b",
+    "\\b\\d+\\s*crore\\b"
+  ],
+
+  "LEGAL_TERMS": [
+    "\\bgrounds of appeal\\b",
+    "\\bcause of action\\b",
+    "\\brelief sought\\b",
+    "\\brecovery of money\\b",
+    "\\blegal notice\\b",
+    "\\bwritten statement\\b",
+    "\\brejoinder\\b",
+    "\\bevidence\\b",
+    "\\bannexure\\b",
+    "\\bverification\\b",
+    "\\bdecree\\b",
+    "\\bjudgment\\b",
+    "\\bdismissed\\b",
+    "\\binterest\\s*@?\\s*\\d+%\\b",
+    "\\blease agreement\\b",
+    "\\bleave and licence\\b",
+    "\\bsecurity deposit\\b",
+    "\\brent arrears\\b",
+    "\\bnotice to quit\\b",
+    "\\bmesne profits\\b",
+    "\\bvacant possession\\b",
+    "\\bstay order\\b",
+    "\\binterim order\\b",
+    "\\bex parte\\b",
+    "\\bcompromise decree\\b",
+    "\\bstamp duty\\b",
+    "\\bpower of attorney\\b",
+    "\\bsale deed\\b",
+    "\\bgift deed\\b",
+    "\\bmutual consent divorce\\b",
+    "\\bcontемpt of court\\b",
+    "\\bspecific performance\\b",
+    "\\bexecution of decree\\b",
+    "\\brent agreement\\b",
+    "\\bmonthly rent\\b",
+    "\\brefundable deposit\\b",
+    "\\bmaintenance charges\\b",
+    "\\bannual rent increase\\b",
+    "\\blate payment penalty\\b",
+    "\\bresidential purpose\\b",
+    "\\bstructural repair\\b",
+    "\\bquiet enjoyment\\b",
+    "\\binspection rights\\b",
+    "\\btermination notice\\b",
+    "\\bdispute resolution\\b",
+    "\\bgoverning law\\b",
+    "\\bcarpet area\\b",
+    "\\bcompetent court\\b"
+  ]
+}
