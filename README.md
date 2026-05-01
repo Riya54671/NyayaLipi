@@ -1,4 +1,4 @@
-# ⚖️ LegalLingo — AI-Powered Legal Document Translator
+# ⚖️ NyayaLipi — AI-Powered Legal Document Translator
 
 An intelligent legal document translation app that combines RAG (Retrieval-Augmented Generation), Named Entity Recognition for legal terms, and neural translation to deliver accurate, context-aware translations of legal documents across Indian languages.
 
