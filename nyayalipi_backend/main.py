@@ -27,6 +27,7 @@ from replacer import replace_text_in_document
 from tts import synthesize_audio_bulbul
 from rag_pipeline import RAGPipeline
 from dotenv import load_dotenv
+from extractor import extract_pdf_lines_with_boxes, extract_image_lines_with_boxes
 import os
 
 load_dotenv()
@@ -173,19 +174,15 @@ async def translate_document(
         raise HTTPException(status_code=502, detail=f"Translation failed: {e}")
 
     # Step 3 — Rebuild document
-    out_suffix = ".txt" if suffix in {".pdf"} | IMAGE_EXTENSIONS else suffix
-    output_doc_path = job_dir / f"translated{out_suffix}"
-    try:
-        replace_text_in_document(
-            input_path=input_path,
-            output_path=output_doc_path,
-            original_text=extracted,
-            translated_text=translated,
-            file_type=out_suffix,
-        )
-        print(f"[DEBUG] Output doc exists: {output_doc_path.exists()}, size: {output_doc_path.stat().st_size if output_doc_path.exists() else 'MISSING'}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Document rebuild failed: {e}")
+    lines = None
+    if suffix == ".pdf":
+        lines = extract_pdf_lines_with_boxes(input_path)
+        extracted = "\n".join(l["text"] for l in lines)
+    elif suffix in IMAGE_EXTENSIONS:
+        lines = extract_image_lines_with_boxes(input_path)
+        extracted = "\n".join(l["text"] for l in lines)
+    else:
+        extracted = extract_text_from_file(input_path) 
 
     # Step 4 — TTS (non-fatal)
     audio_url = None

@@ -1,114 +1,73 @@
-"""
-pipeline/replacer.py
----------------------
-Replace extracted text in the original document with the translated text.
-
-Strategy per format:
-  .txt  — write the translated string directly.
-  .docx — replace paragraph text paragraph-by-paragraph (preserves formatting).
-  .pdf  — generate a new PDF with translated text (reportlab); original layout not preserved.
-"""
-
-import shutil
 from pathlib import Path
+
+from layout_image import reconstruct_image
+from layout_pdf import reconstruct_pdf
+
+
+def _replace_txt(output_path, translated_text):
+    Path(output_path).write_text(translated_text, encoding="utf-8")
+
+
+def _replace_docx(input_path, output_path, original_text, translated_text):
+    try:
+        from docx import Document
+    except ImportError as exc:
+        raise RuntimeError("python-docx is not installed. Run: pip install python-docx") from exc
+
+    doc = Document(str(input_path))
+
+    def replace_in_paragraph(paragraph):
+        if original_text and original_text in paragraph.text:
+            paragraph.text = paragraph.text.replace(original_text, translated_text)
+            return True
+        return False
+
+    replaced = False
+    for paragraph in doc.paragraphs:
+        replaced = replace_in_paragraph(paragraph) or replaced
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    replaced = replace_in_paragraph(paragraph) or replaced
+
+    if not replaced:
+        doc = Document()
+        for line in translated_text.splitlines() or [""]:
+            doc.add_paragraph(line)
+
+    doc.save(str(output_path))
 
 
 def replace_text_in_document(
-    input_path: Path,
-    output_path: Path,
-    original_text: str,
-    translated_text: str,
-    file_type: str,
+    input_path, output_path, original_text, translated_text, file_type,
+    lines=None, target_lang="English",
 ) -> None:
-    """
-    Write a new document at `output_path` with `original_text` replaced by
-    `translated_text`, preserving as much formatting as the format allows.
-    """
     if file_type == ".txt":
         _replace_txt(output_path, translated_text)
     elif file_type == ".docx":
         _replace_docx(input_path, output_path, original_text, translated_text)
     elif file_type == ".pdf":
-        _replace_pdf(input_path, output_path, translated_text)
+        _replace_pdf(input_path, output_path, translated_text, lines, target_lang)
+    elif file_type in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}:
+        _replace_image(input_path, output_path, translated_text, lines, target_lang)
     else:
         raise ValueError(f"Unsupported file type for replacement: {file_type}")
 
 
-# ---------------------------------------------------------------------------
-# Format-specific implementations
-# ---------------------------------------------------------------------------
-
-def _replace_txt(output_path: Path, translated_text: str) -> None:
-    output_path.write_text(translated_text, encoding="utf-8")
-
-
-def _replace_docx(
-    input_path: Path,
-    output_path: Path,
-    original_text: str,
-    translated_text: str,
-) -> None:
-    """
-    Replace paragraph text in a .docx while keeping run-level formatting
-    (bold, italic, font size, colour, etc.) on the first run of each paragraph.
-    """
-    try:
-        from docx import Document
-        from docx.oxml.ns import qn
-        import copy
-    except ImportError as e:
-        raise RuntimeError("python-docx is not installed. Run: pip install python-docx") from e
-
-    # Split both sides on newlines so we can align paragraph-by-paragraph
-    orig_paras = original_text.split("\n")
-    trans_paras = translated_text.split("\n")
-
-    doc = Document(str(input_path))
-
-    # Build a map: original paragraph text → translated paragraph text
-    # We align by index; if counts differ we fall back to whole-document swap.
-    if len(orig_paras) == len(doc.paragraphs) and len(trans_paras) >= len(orig_paras):
-        _replace_docx_paragraph_by_paragraph(doc, trans_paras)
+def _replace_pdf(input_path, output_path, translated_text, lines, target_lang):
+    trans_lines = translated_text.split("\n")
+    if lines and len(trans_lines) == len(lines):
+        reconstruct_pdf(input_path, output_path, lines, trans_lines, target_lang)
     else:
-        # Fallback: clear all paragraphs and write translated lines
-        _replace_docx_full_replace(doc, translated_text)
-
-    doc.save(str(output_path))
+        # fallback: counts mismatched, don't guess wrong placements
+        Path(output_path).write_text(translated_text, encoding="utf-8")
 
 
-def _replace_docx_paragraph_by_paragraph(doc, trans_paras: list[str]) -> None:
-    """Replace text run-by-run preserving first-run formatting."""
-    from docx.oxml import OxmlElement
-
-    for para, new_text in zip(doc.paragraphs, trans_paras):
-        if not para.runs:
-            # No runs — paragraph is structural (empty / section break). Skip.
-            continue
-
-        # Keep formatting of first run, clear all others
-        first_run = para.runs[0]
-        first_run.text = new_text
-
-        for run in para.runs[1:]:
-            run.text = ""
-
-
-def _replace_docx_full_replace(doc, translated_text: str) -> None:
-    """Clear all body content and insert translated paragraphs."""
-    from docx.oxml import OxmlElement
-
-    body = doc.element.body
-    # Remove all existing paragraphs
-    for child in list(body):
-        body.remove(child)
-
-    # Add translated paragraphs
-    for line in translated_text.split("\n"):
-        para = doc.add_paragraph(line)
-
-
-def _replace_pdf(input_path: Path, output_path: Path, translated_text: str) -> None:
-    """Save translated text as a .txt file (output_path will have .pdf ext but content is plain text)."""
-    output_path.with_suffix('.txt').write_text(translated_text, encoding="utf-8")
-    # Also write to the expected path so download works
-    output_path.write_text(translated_text, encoding="utf-8")
+def _replace_image(input_path, output_path, translated_text, lines, target_lang):
+    trans_lines = translated_text.split("\n")
+    if lines and len(trans_lines) == len(lines):
+        reconstruct_image(input_path, output_path, lines, trans_lines, target_lang)
+    else:
+        Path(output_path).write_text(translated_text, encoding="utf-8")

@@ -97,7 +97,11 @@ def load_ner_patterns(path: Path = NER_PATH) -> dict[str, list[str]]:
 
 class InLegalNER:
     def __init__(self, patterns: dict[str, list[str]]):
-        self.patterns = patterns
+        # Compile once at init instead of recompiling every extract() call.
+        self.patterns = {
+            label: [re.compile(p, re.IGNORECASE) for p in regexes]
+            for label, regexes in patterns.items()
+        }
 
     def extract(self, text: str) -> dict[str, list[str]]:
         """
@@ -106,10 +110,10 @@ class InLegalNER:
         Only includes entity types that actually found something.
         """
         entities: dict[str, list[str]] = {}
-        for label, regexes in self.patterns.items():
+        for label, compiled_list in self.patterns.items():
             seen, unique = set(), []
-            for pattern in regexes:
-                for match in re.findall(pattern, text, flags=re.IGNORECASE):
+            for pattern in compiled_list:
+                for match in pattern.findall(text):
                     clean = match.strip()
                     if clean.lower() not in seen:
                         seen.add(clean.lower())
@@ -172,6 +176,7 @@ class FAISSLegalIndex:
         """
         Returns top_k KB entries most semantically similar to query.
         Each result: { id, term, text, score }
+        Kept for backward compatibility / single-query use elsewhere.
         """
         vec = np.array(
             self.model.encode([query], show_progress_bar=False),
@@ -183,6 +188,25 @@ class FAISSLegalIndex:
             if 0 <= idx < len(self.kb):
                 results.append({**self.kb[idx], "score": float(dist)})
         return results
+
+    def retrieve_batch(self, queries: list[str], top_k: int = 2) -> list[list[dict]]:
+        """
+        Encode + search multiple queries in ONE batched call instead of
+        looping retrieve() per query. This is the actual latency fix —
+        one model.encode() + one index.search() for N queries.
+        """
+        if not queries:
+            return []
+        vecs = np.array(self.model.encode(queries, show_progress_bar=False), dtype="float32")
+        distances, indices = self.index.search(vecs, top_k)
+        all_results = []
+        for row_d, row_i in zip(distances, indices):
+            results = []
+            for dist, idx in zip(row_d, row_i):
+                if 0 <= idx < len(self.kb):
+                    results.append({**self.kb[idx], "score": float(dist)})
+            all_results.append(results)
+        return all_results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -206,17 +230,17 @@ def build_system_prompt(
       [3] FAISS-retrieved definitions for accurate translation
     """
     lines = [
-    f"You are a professional legal document translator.",
-    f"Translate the following text accurately into {target_language}.",
-    "",
-    "RULES:",
-    "- Preserve all legal terminology with precision.",
-    "- Do NOT translate: proper nouns, case names, section numbers, act names.",
-    "- Maintain formal register appropriate for legal documents.",
-    "- Preserve all numbering, structure, and formatting.",
-    "- Keep all numbers, amounts and dates in Arabic numerals (1,2,3 NOT १,२,३).",  # ← ADD
-    "",
-]
+        "You are a professional legal document translator.",
+        f"Translate the following text accurately into {target_language}.",
+        "",
+        "RULES:",
+        "- Preserve all legal terminology with precision.",
+        "- Do NOT translate: proper nouns, case names, section numbers, act names.",
+        "- Maintain formal register appropriate for legal documents.",
+        "- Preserve all numbering, structure, and formatting.",
+        "- Keep all numbers, amounts and dates in Arabic numerals (1,2,3 NOT १,२,३).",
+        "",
+    ]
 
     # Section 2 — what RAG found in this specific document
     if legal_terms:
@@ -247,6 +271,29 @@ def build_system_prompt(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  5b. TERM-LEVEL CACHE
+#     Legal terms repeat heavily across documents (same ~125-term KB), so
+#     once a term's retrieval result is known, never re-encode/re-search it.
+#     In-memory only — resets on process restart, no Redis needed.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_term_cache: dict[str, list[dict]] = {}
+
+
+def retrieve_terms_cached(faiss_index: FAISSLegalIndex, terms: list[str], top_k: int = 2) -> dict[str, list[dict]]:
+    """
+    Returns {term: [chunks]} for every term in `terms`.
+    Only uncached terms trigger a (batched) FAISS call; cached ones are free.
+    """
+    uncached = [t for t in terms if t not in _term_cache]
+    if uncached:
+        results = faiss_index.retrieve_batch(uncached, top_k=top_k)
+        for term, res in zip(uncached, results):
+            _term_cache[term] = res
+    return {t: _term_cache[t] for t in terms}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  6. RAG PIPELINE — main class
 #     Call rag.process(extracted_text, target_language)
 #     Get back system_prompt → pass to translator.py
@@ -272,7 +319,7 @@ class RAGPipeline:
         target_language: str,
         top_k: int = 2,
         max_terms: int = 5,
-        translated_text: str = None,   
+        translated_text: str = None,
     ) -> dict:
         """
         Args:
@@ -294,25 +341,31 @@ class RAGPipeline:
         analysis_text = translated_text if translated_text else extracted_text
         print(f"[RAG DEBUG] analysis_text preview: {analysis_text[:200]}")
 
-       # Step 1 — InLegal NER
-        entities = self.ner.extract(analysis_text)       # ← change extracted_text to analysis_text
+        # Step 1 — InLegal NER
+        entities = self.ner.extract(analysis_text)
 
-    # Step 2 — Aho-Corasick
-        legal_terms = self.aho.find_terms(analysis_text)    # ← change extracted_text to analysis_text
+        # Step 2 — Aho-Corasick
+        legal_terms = self.aho.find_terms(analysis_text)
         print(f"[RAG] Terms found: {legal_terms}")
 
-    # Step 3 — FAISS
+        # Step 3 — FAISS retrieval
+        # 3a. Full-document query: always fresh, never cached (text differs every request).
+        doc_level_results = self.faiss.retrieve_batch([analysis_text], top_k=2)
+        doc_chunks = doc_level_results[0] if doc_level_results else []
+
+        # 3b. Per-term queries: go through the term cache — repeated legal terms
+        #     across documents cost zero extra encode/search calls after the first time.
+        terms_to_query = legal_terms[:max_terms]
+        term_results = retrieve_terms_cached(self.faiss, terms_to_query, top_k=top_k)
+
         retrieved: list[dict] = []
-        seen_ids: set[str]    = set()
-        # General retrieval on full text first (catches context beyond term list)
-        for chunk in self.faiss.retrieve(analysis_text, top_k=2):
+        seen_ids: set[str] = set()
+        for chunk in doc_chunks:
             if chunk["id"] not in seen_ids:
                 retrieved.append(chunk)
                 seen_ids.add(chunk["id"])
-
-        # Targeted retrieval per matched term
-        for term in legal_terms[:max_terms]:
-            for chunk in self.faiss.retrieve(term, top_k=top_k):
+        for term in terms_to_query:
+            for chunk in term_results.get(term, []):
                 if chunk["id"] not in seen_ids:
                     retrieved.append(chunk)
                     seen_ids.add(chunk["id"])

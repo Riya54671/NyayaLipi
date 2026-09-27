@@ -125,3 +125,70 @@ def _preprocess_image(img):
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.0)
     return img
+
+def extract_pdf_lines_with_boxes(path: Path) -> list[dict]:
+    """Returns [{page, bbox:(x0,y0,x1,y1), text}, ...] per line, reading order."""
+    import fitz
+    lines = []
+    with fitz.open(str(path)) as doc:
+        for page_num, page in enumerate(doc):
+            data = page.get_text("dict")
+            for block in data["blocks"]:
+                for line in block.get("lines", []):
+                    spans = line.get("spans", [])
+                    if not spans:
+                        continue
+                    text = "".join(s["text"] for s in spans).strip()
+                    if not text:
+                        continue
+                    x0 = min(s["bbox"][0] for s in spans)
+                    y0 = min(s["bbox"][1] for s in spans)
+                    x1 = max(s["bbox"][2] for s in spans)
+                    y1 = max(s["bbox"][3] for s in spans)
+                    lines.append({"page": page_num, "bbox": (x0, y0, x1, y1), "text": text})
+    return lines
+
+
+def _extract_pdf(path: Path) -> str:
+    lines = extract_pdf_lines_with_boxes(path)
+    return "\n".join(l["text"] for l in lines)
+
+
+def extract_image_lines_with_boxes(path: Path) -> list[dict]:
+    """Returns [{bbox:(x0,y0,x1,y1), text}, ...] per OCR line."""
+    import pytesseract
+    from pytesseract import Output
+    from PIL import Image
+
+    pytesseract.pytesseract.tesseract_cmd = r"C:/Users/riya1/AppData/Local/Programs/Tesseract-OCR/tesseract.exe"
+    img = Image.open(str(path))
+    img = _preprocess_image(img)
+    lang = _get_available_langs(pytesseract)
+    data = pytesseract.image_to_data(img, lang=lang, config="--psm 6 --oem 3", output_type=Output.DICT)
+
+    line_groups = {}
+    for i in range(len(data["text"])):
+        word = data["text"][i].strip()
+        if not word:
+            continue
+        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        line_groups.setdefault(key, []).append(i)
+
+    lines = []
+    for key in sorted(line_groups.keys()):
+        idxs = line_groups[key]
+        words = [data["text"][i] for i in idxs]
+        lefts = [data["left"][i] for i in idxs]
+        tops = [data["top"][i] for i in idxs]
+        rights = [data["left"][i] + data["width"][i] for i in idxs]
+        bottoms = [data["top"][i] + data["height"][i] for i in idxs]
+        lines.append({"bbox": (min(lefts), min(tops), max(rights), max(bottoms)),
+                      "text": " ".join(words)})
+    return lines
+
+
+def _extract_image_ocr(path: Path) -> str:
+    lines = extract_image_lines_with_boxes(path)
+    if not lines:
+        raise ValueError(f"OCR returned empty text for {path.name}.")
+    return "\n".join(l["text"] for l in lines)
