@@ -9,7 +9,9 @@ import 'dart:convert';
 import '../theme/app_theme.dart';
 import 'source_language_screen.dart';
 import 'voice_output_screen.dart';
+import 'landing_screen.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -30,11 +32,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _showNotification = false;
   String _notificationMessage = '';
   bool _notificationIsError = false;
-  Uint8List? _fileBytes; // add this with other state variables
+   Uint8List? _fileBytes; // add this with other state variables
+  String? _username;
 
   static const String _backendBaseUrl = 'http://10.92.168.64:8000';
-  
-  
+
+  @override
+  void initState() {
+    super.initState();
+    AuthService.getUsername().then((value) {
+      if (mounted) setState(() => _username = value);
+    });
+  }
+
+  Future<void> _logout() async {
+    await AuthService.logOut();
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LandingScreen()),
+      (route) => false,
+    );
+  }
 
   final List<String> _languages = [
     'Hindi', 'Marathi', 'Tamil', 'Telugu',
@@ -190,21 +209,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Welcome user!',
-                              style: GoogleFonts.poppins(
-                                  fontSize: 26,
-                                  fontWeight: FontWeight.w800,
-                                  color: AppTheme.primaryBlue)),
-                          Text('Lets translate your documents.',
-                              style: GoogleFonts.poppins(
-                                  fontSize: 13,
-                                  color: AppTheme.textGrey)),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                                _username != null && _username!.isNotEmpty
+                                    ? 'Welcome, $_username!'
+                                    : 'Welcome!',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.poppins(
+                                    fontSize: 26,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppTheme.primaryBlue)),
+                            Text('Lets translate your documents.',
+                                style: GoogleFonts.poppins(
+                                    fontSize: 13,
+                                    color: AppTheme.textGrey)),
+                          ],
+                        ),
                       ),
-                      
+                      IconButton(
+                        onPressed: _logout,
+                        icon: const Icon(Icons.logout_rounded),
+                        color: AppTheme.textGrey,
+                        tooltip: 'Log out',
+                      ),
                     ],
                   ).animate().fadeIn(duration: 500.ms),
 

@@ -12,11 +12,12 @@ import os
 import uuid
 import shutil
 import tempfile
+from datetime import datetime, timezone
 import requests as _requests
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -26,6 +27,9 @@ from translator import translate_text, resolve_lang_name
 from replacer import replace_text_in_document
 from tts import synthesize_audio_bulbul
 from rag_pipeline import RAGPipeline
+from auth_routes import router as auth_router
+from auth_utils import get_current_user
+from database import files_collection
 from dotenv import load_dotenv
 import os
 
@@ -52,7 +56,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.include_router(auth_router)
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -125,6 +129,7 @@ async def translate_document(
     target_language: str = Form("Hindi"),
     tts_speaker: str = Form("anushka"),
     generate_audio: bool = Form(True),
+    current_user: dict = Depends(get_current_user), 
 ):
     job_id = str(uuid.uuid4())
     job_dir = OUTPUT_DIR / job_id
@@ -201,6 +206,19 @@ async def translate_document(
             audio_url = f"/download/audio/{job_id}"
         except Exception as e:
             print(f"[WARN] TTS failed for {job_id}: {e}")
+        # Record this translation in the user's file history (non-fatal)
+    try:
+        files_collection.insert_one({
+            "user_id": current_user["_id"],
+            "document_name": file.filename,
+            "term_ids": legal_terms,
+            "time": datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        print(f"[WARN] Failed to record file history for {job_id}: {e}")
+
+   
+        
 
     return TranslationResponse(
         job_id=job_id,
