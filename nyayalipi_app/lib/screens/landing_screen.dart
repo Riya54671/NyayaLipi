@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
+import '../services/auth_service.dart';
 import 'dashboard_screen.dart';
-
+import 'login_screen.dart';
 class LandingScreen extends StatelessWidget {
   const LandingScreen({super.key});
 
@@ -83,12 +84,16 @@ class LandingScreen extends StatelessWidget {
                 const SizedBox(height: 52),
 
                 // ── Let's Translate Button ────────────────────────────────
-                ElevatedButton(
-                  onPressed: () {
+                  ElevatedButton(
+                  onPressed: () async {
+                    final loggedIn = await AuthService.isLoggedIn();
+                    if (!context.mounted) return;
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => const DashboardScreen(),
+                        builder: (_) => loggedIn
+                            ? const DashboardScreen()
+                            : const LoginScreen(),
                       ),
                     );
                   },

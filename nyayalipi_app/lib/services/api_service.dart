@@ -9,13 +9,15 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
-
+import 'auth_service.dart';
 
 class ApiService {
   // ── Change this if testing on a real phone (use your PC's local IP) ──────
   // Emulator/Chrome: keep as 127.0.0.1
   // Real Android phone on same WiFi: change to e.g. http://192.168.1.5:8000
-  static const String BASE_URL = 'http://10.92.168.64:8000';
+  //static const String BASE_URL = 'http://10.92.168.64:8000';
+    static const String BASE_URL = 'http://10.103.122.3:8000';//for testing on chrome
+
 
   // ── 1. DETECT LANGUAGE ────────────────────────────────────────────────────
   // POST /detect-language
@@ -26,7 +28,11 @@ class ApiService {
       'POST',
       Uri.parse('$BASE_URL/detect-language'),
     );
+    // Attach the logged-in user's JWT so the backend can record this file
+    // under their account.
+    request.headers.addAll(await AuthService.authHeader());
 
+    // File attachment
     request.files.add(
       await http.MultipartFile.fromPath('file', file.path),
     );
@@ -60,6 +66,10 @@ class ApiService {
       Uri.parse('$BASE_URL/translate'),
     );
 
+    // Attach the logged-in user's JWT — /translate is a protected route,
+    // the backend needs this to know who to save the file history under.
+    request.headers.addAll(await AuthService.authHeader());
+
     // File attachment
     request.files.add(
       await http.MultipartFile.fromPath('file', file.path),
@@ -73,6 +83,10 @@ class ApiService {
 
     final streamedResponse = await request.send();
     final response = await http.Response.fromStream(streamedResponse);
+
+    if (response.statusCode == 401) {
+      throw Exception('Your session has expired. Please log in again.');
+    }
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
