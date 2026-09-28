@@ -130,22 +130,56 @@ class InLegalNER:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class AhoCorasickMatcher:
+    """
+    Whole-word matching: "rent" no longer matches inside "current",
+    "fir" inside "first", "bail" inside "available".
+    "will" only matches as a noun ("the will"), not "the tenant will pay".
+    term_to_ids maps each term to ALL its KB ids (used for the glossary).
+    """
+
+    _NOUN_CONTEXT = {
+        "will": {"a", "the", "his", "her", "their", "its", "last", "said",
+                 "registered", "valid", "this", "such", "earlier", "unregistered"},
+    }
+
     def __init__(self, kb: list[dict]):
+        self.term_to_ids: dict[str, list[str]] = {}
+        self.display: dict[str, str] = {}
+        for entry in kb:
+            key = entry["term"].lower().strip()
+            self.term_to_ids.setdefault(key, []).append(entry["id"])
+            self.display.setdefault(key, entry["term"])
+
         self.automaton = ahocorasick.Automaton()
-        for idx, entry in enumerate(kb):
-            self.automaton.add_word(entry["term"].lower(), (idx, entry["term"]))
+        for key in self.term_to_ids:
+            self.automaton.add_word(key, key)
         self.automaton.make_automaton()
-        print(f"[RAG] Aho-Corasick built with {len(kb)} terms.")
+        print(f"[RAG] Aho-Corasick built with {len(self.term_to_ids)} unique terms.")
+
+    @staticmethod
+    def _is_word_char(c: str) -> bool:
+        return c.isalnum() or c == "_"
 
     def find_terms(self, text: str) -> list[str]:
         """
-        Returns list of legal terms found in text, preserving original case.
+        Returns list of legal terms found in text (whole words only).
         e.g. "habeas corpus", "injunction", "suo motu"
         """
-        found: dict[str, str] = {}
-        for _, (_, term) in self.automaton.iter(text.lower()):
-            found[term.lower()] = term
-        return list(found.values())
+        lower = text.lower()
+        found: dict[str, None] = {}
+        for end, key in self.automaton.iter(lower):
+            start = end - len(key) + 1
+            if start > 0 and self._is_word_char(lower[start - 1]):
+                continue
+            if end + 1 < len(lower) and self._is_word_char(lower[end + 1]):
+                continue
+            ctx = self._NOUN_CONTEXT.get(key)
+            if ctx is not None:
+                prev = lower[:start].split()
+                if not prev or prev[-1].strip(".,;:'\"()") not in ctx:
+                    continue
+            found.setdefault(key, None)
+        return [self.display[k] for k in found]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -272,8 +306,8 @@ def build_system_prompt(
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  5b. TERM-LEVEL CACHE
-#     Legal terms repeat heavily across documents (same ~125-term KB), so
-#     once a term's retrieval result is known, never re-encode/re-search it.
+#     Legal terms repeat heavily across documents, so once a term's
+#     retrieval result is known, never re-encode/re-search it.
 #     In-memory only — resets on process restart, no Redis needed.
 # ══════════════════════════════════════════════════════════════════════════════
 

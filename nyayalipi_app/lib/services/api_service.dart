@@ -15,8 +15,9 @@ class ApiService {
   // ── Change this if testing on a real phone (use your PC's local IP) ──────
   // Emulator/Chrome: keep as 127.0.0.1
   // Real Android phone on same WiFi: change to e.g. http://192.168.1.5:8000
-  //static const String BASE_URL = 'http://10.92.168.64:8000';
-    static const String BASE_URL = 'http://10.103.122.3:8000';//for testing on chrome
+  //static const String BASE_URL = 'http://10.92.168.64:8000';10.103.122.64
+    //static const String BASE_URL = 'http://10.103.122.3:8000';//for testing on chrome
+    static const String BASE_URL = 'http://10.103.122.64:8000';
 
 
   // ── 1. DETECT LANGUAGE ────────────────────────────────────────────────────
@@ -58,7 +59,7 @@ class ApiService {
     required File file,
     required String sourceLanguage,   // e.g. "Tamil"
     required String targetLanguage,   // e.g. "Hindi"
-    String ttsSpeaker = 'anushka',
+    String ttsSpeaker = 'shubh',
     bool generateAudio = true,
   }) async {
     final request = http.MultipartRequest(

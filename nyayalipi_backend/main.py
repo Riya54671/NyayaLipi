@@ -5,7 +5,7 @@ Flow: Upload doc → Extract text → Translate via Sarvam API
       → Replace in doc → Download  +  Bulbul TTS audio
 
 Env vars (set before running uvicorn):
-    SARVAM_API_KEY   sk_9lwdwj67_...
+    SARVAM_API_KEY   (set in .env, never commit the real key)
 """
 
 import os
@@ -32,7 +32,9 @@ from auth_utils import get_current_user
 from database import files_collection
 from dotenv import load_dotenv
 from extractor import extract_pdf_lines_with_boxes, extract_image_lines_with_boxes
-import os
+from bson import ObjectId
+from glossary import glossary
+from kb_updater import record_candidates
 
 load_dotenv()
 
@@ -72,6 +74,7 @@ class DetectLanguageResponse(BaseModel):
 
 class TranslationResponse(BaseModel):
     job_id: str
+    file_id: Optional[str] = None
     source_language: str
     target_language: str
     translated_text_preview: str
@@ -81,13 +84,13 @@ class TranslationResponse(BaseModel):
     message: str
     legal_terms_found: list = []
     entities_found: dict = {}
+    glossary: list = []
 
 SUPPORTED_EXTENSIONS = {
     ".docx", ".txt", ".pdf",
     ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"
 }
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
-
 
 
 # ---------------------------------------------------------------------------
@@ -122,15 +125,29 @@ async def detect_language(file: UploadFile = File(...)):
     return DetectLanguageResponse(language=lang_name)
 
 
+@app.get("/files/{file_id}/glossary")
+def get_glossary(file_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id.")
+
+    file = files_collection.find_one({"_id": oid, "user_id": current_user["_id"]})
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    return glossary.get_terms_by_ids(file.get("term_ids", []))
+
+
 @app.post("/translate", response_model=TranslationResponse)
 async def translate_document(
     request: Request,
     file: UploadFile = File(...),
     source_language: str = Form("English"),
     target_language: str = Form("Hindi"),
-    tts_speaker: str = Form("anushka"),
+    tts_speaker: str = Form("shubh"),
     generate_audio: bool = Form(True),
-    current_user: dict = Depends(get_current_user), 
+    current_user: dict = Depends(get_current_user),
 ):
     job_id = str(uuid.uuid4())
     job_dir = OUTPUT_DIR / job_id
@@ -154,6 +171,12 @@ async def translate_document(
 
     if not extracted.strip():
         raise HTTPException(status_code=422, detail="No text could be extracted.")
+
+    # KB auto-update: log unknown legal terms for review (non-fatal)
+    try:
+        record_candidates(extracted)
+    except Exception as e:
+        print(f"[WARN] KB candidate scan failed for {job_id}: {e}")
 
     src_name = resolve_lang_name(source_language)
     tgt_name = resolve_lang_name(target_language)
@@ -180,14 +203,26 @@ async def translate_document(
 
     # Step 3 — Rebuild document
     lines = None
+    # For PDF input, output as .docx instead of reconstructing PDF layout —
+    # .docx reconstruction is proven working; PDF layout reconstruction is not, given time constraints.
     if suffix == ".pdf":
-        lines = extract_pdf_lines_with_boxes(input_path)
-        extracted = "\n".join(l["text"] for l in lines)
-    elif suffix in IMAGE_EXTENSIONS:
-        lines = extract_image_lines_with_boxes(input_path)
-        extracted = "\n".join(l["text"] for l in lines)
+        out_suffix = ".docx"
     else:
-        extracted = extract_text_from_file(input_path) 
+        out_suffix = suffix
+    output_doc_path = job_dir / f"translated{out_suffix}"
+    try:
+        replace_text_in_document(
+            input_path=input_path,
+            output_path=output_doc_path,
+            original_text=extracted,
+            translated_text=translated,
+            file_type=out_suffix,
+            lines=lines,
+            target_lang=tgt_name,
+        )
+        print(f"[DEBUG] Output doc exists: {output_doc_path.exists()}, size: {output_doc_path.stat().st_size if output_doc_path.exists() else 'MISSING'}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Document rebuild failed: {e}")
 
     # Step 4 — TTS (non-fatal)
     audio_url = None
@@ -203,28 +238,34 @@ async def translate_document(
             audio_url = f"/download/audio/{job_id}"
         except Exception as e:
             print(f"[WARN] TTS failed for {job_id}: {e}")
-        # Record this translation in the user's file history (non-fatal)
+
+    # Step 5 — Record in user's file history with KB term IDs (non-fatal)
+    term_ids = []
+    file_id = None
     try:
-        files_collection.insert_one({
+        term_ids = [
+            tid for t in legal_terms for tid in rag.aho.term_to_ids.get(t.lower(), [])
+        ]
+        inserted = files_collection.insert_one({
             "user_id": current_user["_id"],
             "document_name": file.filename,
-            "term_ids": legal_terms,
+            "term_ids": term_ids,
             "time": datetime.now(timezone.utc),
         })
+        file_id = str(inserted.inserted_id)
     except Exception as e:
         print(f"[WARN] Failed to record file history for {job_id}: {e}")
 
-   
-        
-
     return TranslationResponse(
         job_id=job_id,
+        file_id=file_id,
         source_language=src_name,
         target_language=tgt_name,
         translated_text_preview=translated[:500],
         document_download_url=f"/download/document/{job_id}",
-        legal_terms_found = legal_terms,   
-        entities_found    = entities,
+        legal_terms_found=legal_terms,
+        entities_found=entities,
+        glossary=glossary.get_terms_by_ids(term_ids),
         audio_download_url=audio_url,
         original_filename=file.filename,
         message="Translation complete.",
@@ -236,7 +277,7 @@ def download_document(job_id: str):
     job_dir = OUTPUT_DIR / job_id
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="Job not found.")
-    for ext in (".docx", ".txt", ".pdf"):
+    for ext in (".docx", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"):
         candidate = job_dir / f"translated{ext}"
         if candidate.exists():
             return FileResponse(str(candidate), filename=f"translated_{job_id}{ext}",

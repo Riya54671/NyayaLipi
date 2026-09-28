@@ -28,9 +28,11 @@ MAX_TTS_CHARS = int(os.getenv("TTS_MAX_CHARS", "500"))
 # Pick the best default speaker for each language
 # ---------------------------------------------------------------------------
 
-# All available Bulbul speakers (for reference):
-# anushka, manisha, vidya, arya (female)
-# abhilash, karun, hitesh (male)
+# All available Bulbul v3 speakers (for reference):
+# shubh (default), aditya, ritu, priya, neha, rahul, pooja, rohan, simran,
+# kavya, amit, dev, ishita, shreya, ratan, varun, manan, sumit, roopa,
+# kabir, aayan, ashutosh, advait, anand, tanya, tarun, sunny, mani, gokul,
+# vijay, shruti, suhani, mohit, kavitha, rehan, soham, rupali
 
 _LANG_TO_CODE: dict[str, str] = {
     "English":   "en-IN",
@@ -49,18 +51,18 @@ _LANG_TO_CODE: dict[str, str] = {
 
 # Default speakers per language — these voices are verified to work well
 _LANG_TO_DEFAULT_SPEAKER: dict[str, str] = {
-    "en-IN": "anushka",
-    "hi-IN": "anushka",
-    "ta-IN": "anushka",
-    "te-IN": "anushka",
-    "kn-IN": "anushka",
-    "ml-IN": "anushka",
-    "mr-IN": "anushka",
-    "bn-IN": "anushka",
-    "gu-IN": "anushka",
-    "pa-IN": "anushka",
-    "od-IN": "anushka",
-    "as-IN": "anushka",
+    "en-IN": "shubh",
+    "hi-IN": "shubh",
+    "ta-IN": "shubh",
+    "te-IN": "shubh",
+    "kn-IN": "shubh",
+    "ml-IN": "shubh",
+    "mr-IN": "shubh",
+    "bn-IN": "shubh",
+    "gu-IN": "shubh",
+    "pa-IN": "shubh",
+    "od-IN": "shubh",
+    "as-IN": "shubh",
 }
 
 
@@ -125,16 +127,16 @@ def _chunk_text(text: str, max_chars: int) -> list[str]:
 def _call_bulbul(text: str, lang_code: str, speaker: str, pitch: float, pace: float, loudness: float) -> bytes:
     """Call Sarvam Bulbul TTS and return raw WAV bytes."""
     payload = {
-        "inputs": [text],
-        "target_language_code": lang_code,
-        "speaker": speaker,
-        "pitch": pitch,
-        "pace": pace,
-        "loudness": loudness,
-        "speech_sample_rate": 24000,
-        "enable_preprocessing": True,
-        "model": "bulbul:v2",
-    }
+    "inputs": [text],
+    "target_language_code": lang_code,
+    "speaker": speaker,
+    "pitch": pitch,
+    "pace": pace,
+    "loudness": loudness,
+    "speech_sample_rate": 24000,
+    "enable_preprocessing": True,
+    "model": "bulbul:v3",   # changed from v2
+}
 
     headers = {
         "Content-Type": "application/json",
@@ -142,6 +144,10 @@ def _call_bulbul(text: str, lang_code: str, speaker: str, pitch: float, pace: fl
     }
 
     resp = requests.post(SARVAM_TTS_URL, json=payload, headers=headers, timeout=60)
+
+    if resp.status_code != 200:
+        print(f"[TTS] Error body: {resp.text}")   # now actually runs before raising
+
     resp.raise_for_status()
     data = resp.json()
 
@@ -149,7 +155,6 @@ def _call_bulbul(text: str, lang_code: str, speaker: str, pitch: float, pace: fl
     if not audios:
         raise ValueError(f"No audio in Bulbul response: {data}")
 
-    # Bulbul returns base64-encoded WAV
     return base64.b64decode(audios[0])
 
 
@@ -182,7 +187,7 @@ def _merge_wav_chunks(wav_chunks: list[bytes]) -> bytes:
 def synthesize_audio_bulbul(
     text: str,
     output_path: Path,
-    speaker: str = "anushka",
+    speaker: str = "shubh",
     language: str = "Hindi",
     pitch: float = 0,
     pace: float = 1.0,
@@ -197,7 +202,7 @@ def synthesize_audio_bulbul(
         return
 
     lang_code = _resolve_lang_code(language)
-    resolved_speaker = speaker if speaker else _LANG_TO_DEFAULT_SPEAKER.get(lang_code, "anushka")
+    resolved_speaker = speaker if speaker else _LANG_TO_DEFAULT_SPEAKER.get(lang_code, "shubh")
 
     print(f"[TTS] Bulbul — language={language} ({lang_code}), speaker={resolved_speaker}")
 

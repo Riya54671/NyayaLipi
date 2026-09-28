@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import 'dart:convert';
 import '../theme/app_theme.dart';
+import '../services/api_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -12,14 +16,15 @@ class VoiceOutputScreen extends StatefulWidget {
   final String translatedText;  // text returned by backend (English / target lang)
   final String audioBase64;
   final String docUrl;
+  final List<dynamic> glossary; // [{term, text}, ...] from /translate response
 
-
-  const VoiceOutputScreen({super.key, 
+  const VoiceOutputScreen({super.key,
   required this.sourceLanguage,
   required this.targetLanguage,
   required this.translatedText,
   required this.audioBase64,
   required this.docUrl,
+  this.glossary = const [],
 });
 
   @override
@@ -38,14 +43,15 @@ class _VoiceOutputScreenState extends State<VoiceOutputScreen> {
   @override
 void initState() {
   super.initState();
-  print('[DEBUG] VoiceOutputScreen docUrl: "${widget.docUrl}"'); // ← ADD
-  print('[DEBUG] VoiceOutputScreen audioUrl: "${widget.audioBase64}"'); // ← ADD
+  print('[DEBUG] VoiceOutputScreen docUrl: "${widget.docUrl}"');
+  print('[DEBUG] VoiceOutputScreen audioUrl: "${widget.audioBase64}"');
+  print('[DEBUG] VoiceOutputScreen glossary terms: ${widget.glossary.length}');
   _player = AudioPlayer();
   _initAudio();
   _listenToPlayer();
 }
 
-  // ── Decode base64 WAV → temp file → load into player ───────────────────
+  // ── Load audio URL into player ─────────────────────────────────────────
   Future<void> _initAudio() async {
   try {
     await _player.setUrl(widget.audioBase64);
@@ -96,9 +102,8 @@ Future<void> _handleDownload() async {
     }
 
     final uri = Uri.parse(widget.docUrl);
-    // ← Don't use canLaunchUrl, just launch directly
     await launchUrl(uri, mode: LaunchMode.externalApplication);
-    
+
     setState(() => _showDlNotif = true);
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) setState(() => _showDlNotif = false);
@@ -114,7 +119,6 @@ Future<void> _handleDownload() async {
 }
   Future<void> _handleShare() async {
   try {
-    // Share the document URL if available
     if (widget.docUrl.isNotEmpty) {
       await Share.share(
         'Check out my translated document: ${widget.docUrl}',
@@ -123,7 +127,6 @@ Future<void> _handleDownload() async {
       return;
     }
 
-    // Fallback: share the translated text
     if (widget.translatedText.isNotEmpty) {
       await Share.share(
         widget.translatedText,
@@ -181,7 +184,6 @@ Future<void> _handleDownload() async {
                                 color: AppTheme.primaryBlue)),
                       ),
                       const SizedBox(width: 8),
-                      
                     ],
                   ).animate().fadeIn(duration: 500.ms),
 
@@ -277,6 +279,12 @@ Future<void> _handleDownload() async {
                   ).animate().fadeIn(delay: 250.ms),
 
                   const SizedBox(height: 20),
+
+                  // ── Glossary card ─────────────────────────────────────
+                  if (widget.glossary.isNotEmpty) ...[
+                    _glossaryCard(),
+                    const SizedBox(height: 20),
+                  ],
 
                   // ── Audio Player ──────────────────────────────────────
                   Column(children: [
@@ -393,7 +401,7 @@ Future<void> _handleDownload() async {
                       const Icon(Icons.download_done_rounded,
                           color: Colors.white, size: 20),
                       const SizedBox(width: 10),
-                      Expanded(child: Text('Audio saved to your device!',
+                      Expanded(child: Text('Document download started!',
                           style: GoogleFonts.poppins(color: Colors.white,
                               fontSize: 13, fontWeight: FontWeight.w500))),
                     ]),
@@ -458,5 +466,94 @@ Future<void> _handleDownload() async {
         ),
         child: Icon(icon, size: 18),
       );
- 
+
+  // ── Glossary ─────────────────────────────────────────────────────────
+  String _cap(String s) => s.split(' ')
+      .map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1))
+      .join(' ');
+
+  Widget _glossaryTile(dynamic t) => Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+          expandedAlignment: Alignment.centerLeft,
+          iconColor: AppTheme.primaryBlue,
+          title: Text(_cap(t['term'] ?? ''),
+              style: GoogleFonts.poppins(fontSize: 13,
+                  fontWeight: FontWeight.w600, color: AppTheme.textDark)),
+          children: [
+            Text(t['text'] ?? '',
+                style: GoogleFonts.poppins(fontSize: 12,
+                    color: AppTheme.textGrey, height: 1.5)),
+          ],
+        ),
+      );
+
+  void _showFullGlossary() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.65,
+        maxChildSize: 0.95,
+        builder: (_, controller) => Column(children: [
+          const SizedBox(height: 10),
+          Container(width: 40, height: 4,
+              decoration: BoxDecoration(color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2))),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text('Legal Glossary (${widget.glossary.length})',
+                style: GoogleFonts.poppins(fontSize: 17,
+                    fontWeight: FontWeight.w700, color: AppTheme.primaryBlue)),
+          ),
+          Expanded(
+            child: ListView.separated(
+              controller: controller,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: widget.glossary.length,
+              separatorBuilder: (_, __) =>
+                  Divider(height: 1, color: Colors.grey.shade200),
+              itemBuilder: (_, i) => _glossaryTile(widget.glossary[i]),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+    Widget _glossaryCard() {
+    return GestureDetector(
+      onTap: _showFullGlossary,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: AppTheme.backgroundBlue,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.primaryBlue.withOpacity(0.2)),
+        ),
+        child: Row(children: [
+          const Icon(Icons.menu_book_rounded,
+              size: 22, color: AppTheme.primaryBlue),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Legal Glossary',
+                  style: GoogleFonts.poppins(fontSize: 14,
+                      fontWeight: FontWeight.w700, color: AppTheme.primaryBlue)),
+              Text('${widget.glossary.length} legal term${widget.glossary.length == 1 ? '' : 's'} found · Tap to view',
+                  style: GoogleFonts.poppins(fontSize: 11, color: AppTheme.textGrey)),
+            ]),
+          ),
+          const Icon(Icons.chevron_right_rounded, color: AppTheme.primaryBlue),
+        ]),
+      ),
+    ).animate().fadeIn(delay: 275.ms);
+  }
 }
