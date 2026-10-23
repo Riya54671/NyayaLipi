@@ -1,44 +1,36 @@
 """
 glossary.py
 -----------
-Glossary lookup: term IDs (from files.term_ids) → [{term, text}] for the frontend.
-Reads directly from legal_kb.json — no separate Mongo glossary collection.
+Glossary lookup: term IDs (from files.term_ids) → [{term, text, hindi}] for the frontend.
+Reads from MongoDB `legal_terms`. Supports both new ids (Mongo ObjectId strings)
+and old 'kb_XXX' ids from files saved before the migration.
 """
 
-import json
-from pathlib import Path
+from bson import ObjectId
 
-KB_PATH = Path(__file__).parent / "legal_kb.json"
+from database import legal_terms_collection as terms_col
 
 
 class Glossary:
-    def __init__(self, kb_path: Path = KB_PATH):
-        self.kb_path = kb_path
-        self.reload()
-
     def reload(self) -> None:
-        """Load KB into a dict keyed by id → O(1) lookup per term."""
-        with open(self.kb_path, encoding="utf-8") as f:
-            kb = json.load(f)
-        self.by_id = {e["id"]: e for e in kb}
+        """Kept for compatibility; Mongo is always current, nothing to reload."""
 
     def get_terms_by_ids(self, term_ids: list[str]) -> list[dict]:
-        """
-        ["kb_052", "kb_121", "kb_031"] → [{"term": "lessor", "text": "..."}, {"term": "injunction", ...}]
-        Duplicate terms (same term, two IDs) are merged into one entry.
-        Unknown IDs are skipped.
-        """
+        if not term_ids:
+            return []
+        oids = [ObjectId(t) for t in term_ids if ObjectId.is_valid(t)]
+        legacy = [t for t in term_ids if not ObjectId.is_valid(t)]
+
+        query = {"$or": [{"_id": {"$in": oids}}, {"legacy_ids": {"$in": legacy}}]}
         merged: dict[str, dict] = {}
-        for tid in term_ids:
-            entry = self.by_id.get(tid)
-            if not entry:
-                continue
-            key = entry["term"].lower()
-            if key in merged:
-                if entry["text"] not in merged[key]["text"]:
-                    merged[key]["text"] += " " + entry["text"]
-            else:
-                merged[key] = {"term": entry["term"], "text": entry["text"]}
+        for d in terms_col.find(query, {"term": 1, "plain_text": 1, "context": 1, "translations": 1}):
+            key = d["term"].lower()
+            if key not in merged:
+                merged[key] = {
+                    "term": d["term"],
+                    "text": d.get("plain_text") or d.get("context") or "",
+                    "hindi": (d.get("translations") or {}).get("hi", ""),
+                }
         return list(merged.values())
 
 

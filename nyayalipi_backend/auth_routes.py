@@ -17,6 +17,7 @@ Env vars (see .env):
 """
 
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -29,6 +30,7 @@ from auth_models import (
     SignupRequest,
     LoginRequest,
     GoogleAuthRequest,
+    ProfileUpdateRequest,
     TokenResponse,
     UserOut,
 )
@@ -40,7 +42,7 @@ from auth_utils import (
     user_to_dict,
 )
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
@@ -158,3 +160,39 @@ def google_auth(body: GoogleAuthRequest):
 @router.get("/me", response_model=UserOut)
 def me(current_user: dict = Depends(get_current_user)):
     return UserOut(**user_to_dict(current_user))
+
+# ---------------------------------------------------------------------------
+# Update current user (name / email / password)
+# ---------------------------------------------------------------------------
+@router.put("/me", response_model=UserOut)
+def update_me(body: ProfileUpdateRequest, current_user: dict = Depends(get_current_user)):
+    updates = {}
+    uid = current_user["_id"]
+
+    if body.username is not None:
+        name = body.username.strip()
+        if name != current_user["username"]:
+            if users_collection.find_one({"username": name, "_id": {"$ne": uid}}):
+                raise HTTPException(status_code=409, detail="Username already taken")
+            updates["username"] = name
+
+    if body.email is not None:
+        email = str(body.email).lower()
+        if email != current_user["email"]:
+            if users_collection.find_one({"email": email, "_id": {"$ne": uid}}):
+                raise HTTPException(status_code=409, detail="Email already registered")
+            updates["email"] = email
+
+    if body.new_password:
+        if current_user.get("auth_provider") == "google":
+            raise HTTPException(
+                status_code=400,
+                detail="Google accounts sign in with Google and have no password",
+            )
+        updates["password_hash"] = hash_password(body.new_password)
+
+    if updates:
+        users_collection.update_one({"_id": uid}, {"$set": updates})
+
+    user = users_collection.find_one({"_id": uid})
+    return UserOut(**user_to_dict(user))

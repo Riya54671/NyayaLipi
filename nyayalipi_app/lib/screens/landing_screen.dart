@@ -24,7 +24,7 @@ class LandingScreen extends StatelessWidget {
           ),
 
           // ── Slight white overlay ───────────────────────────────────────
-          Container(color: Colors.white.withOpacity(0.15)),
+          Container(color: Colors.white.withValues(alpha: 0.15)),
 
           // ── Center Content ─────────────────────────────────────────────
           Center(
@@ -42,12 +42,12 @@ class LandingScreen extends StatelessWidget {
                     letterSpacing: 0.5,
                     shadows: [
                       Shadow(
-                        color: AppTheme.primaryBlue.withOpacity(0.25),
+                        color: AppTheme.primaryBlue.withValues(alpha: 0.25),
                         blurRadius: 16,
                         offset: const Offset(0, 6),
                       ),
                       Shadow(
-                        color: Colors.black.withOpacity(0.10),
+                        color: Colors.black.withValues(alpha: 0.10),
                         blurRadius: 8,
                         offset: const Offset(0, 3),
                       ),
@@ -71,7 +71,7 @@ class LandingScreen extends StatelessWidget {
                     height: 1.55,
                     shadows: [
                       Shadow(
-                        color: Colors.black.withOpacity(0.15),
+                        color: Colors.black.withValues(alpha: 0.15),
                         blurRadius: 8,
                         offset: const Offset(0, 3),
                       ),
@@ -106,7 +106,7 @@ class LandingScreen extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 48, vertical: 18),
                     elevation: 6,
-                    shadowColor: AppTheme.primaryBlue.withOpacity(0.5),
+                    shadowColor: AppTheme.primaryBlue.withValues(alpha: 0.5),
                   ),
                   child: Text(
                     "Let's Translate",

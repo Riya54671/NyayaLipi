@@ -22,16 +22,15 @@ class AuthService {
   static const String _usernameKey = 'auth_username';
   static const String _emailKey = 'auth_email';
   static const String _webClientId =
-    '915785312697-stnkt8ntqp0uilkfc308s44pt178643d.apps.googleusercontent.com';
+      '915785312697-stnkt8ntqp0uilkfc308s44pt178643d.apps.googleusercontent.com';
 
-    // Web reads the client ID from the <meta name="google-signin-client_id">
+  // Web reads the client ID from the <meta name="google-signin-client_id">
   // tag in web/index.html instead — serverClientId isn't supported there
   // and throws if passed. Android/iOS need serverClientId so the token
   // returned is audienced for the backend's GOOGLE_CLIENT_ID.
   static final GoogleSignIn _googleSignIn = kIsWeb
       ? GoogleSignIn(scopes: ['email'])
       : GoogleSignIn(scopes: ['email'], serverClientId: _webClientId);
-  
 
   // ── SIGN UP (email/password) ──────────────────────────────────────────
   static Future<void> signUp({
@@ -86,7 +85,8 @@ class AuthService {
     );
     await _handleAuthResponse(response);
   }
-    // ── WEB-ONLY: complete sign-in after Google's own rendered button fires ──
+
+  // ── WEB-ONLY: complete sign-in after Google's own rendered button fires ──
   // On web, `.signIn()` can't return an idToken (Google's own limitation).
   // Instead we render Google's actual button and listen for the resulting
   // account via `onCurrentUserChanged`, which DOES carry an idToken.
@@ -144,10 +144,23 @@ class AuthService {
     return prefs.getString(_emailKey);
   }
 
+  // Update the cached name/email after the user edits their profile,
+  // so screens reading getUsername() show the new value immediately.
+  static Future<void> updateCachedUser({
+    String? username,
+    String? email,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (username != null) await prefs.setString(_usernameKey, username);
+    if (email != null) await prefs.setString(_emailKey, email);
+  }
+
   // Convenience for other services (e.g. ApiService) to attach the token.
   static Future<Map<String, String>> authHeader() async {
     final token = await getToken();
-    if (token == null) return {};
+    if (token == null || token.trim().isEmpty) {
+      throw Exception('You are not logged in. Please log in and try again.');
+    }
     return {'Authorization': 'Bearer $token'};
   }
 

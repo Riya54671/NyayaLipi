@@ -2,120 +2,105 @@
 rag_pipeline.py
 ---------------
 RAG Layer — responsibility is ONLY:
-  1. InLegal NER         → find named entities in extracted text
-  2. Aho-Corasick        → match legal terms from knowledge base
+  1. InLegal NER         → structural entities (courts, acts, sections...) from in-code patterns
+  2. Aho-Corasick        → legal terms from the MongoDB knowledge base
   3. FAISS               → retrieve English context per matched term
   4. build_system_prompt → return prompt string to translator.py
 
-Language detection is NOT done here.
-Translation is NOT done here.
-Both of those are translator.py's job.
-
-Install:
-    pip install pyahocorasick faiss-cpu sentence-transformers numpy
+The KB is loaded from Mongo (approved terms only) and hot-reloaded in a
+background thread whenever kb_meta.version changes — no restart needed.
 """
 
-import json
+import os
 import re
-import numpy as np
+import threading
+import time
 from pathlib import Path
 
+import pickle
 import ahocorasick
 import faiss
+import numpy as np
 from sentence_transformers import SentenceTransformer
+from concurrent.futures import ThreadPoolExecutor
+from timing import timed
+from masking import mask_sensitive_terms
 
-# ── Paths ──────────────────────────────────────────────────────────────────
+import kb_store
+from kb_store import GENERIC_STOPLIST
+
 BASE_DIR = Path(__file__).parent
-KB_PATH  = BASE_DIR / "legal_kb.json"
-NER_PATH = BASE_DIR / "ner.json"          # your file is called ner.json
+MODEL_NAME = "all-MiniLM-L6-v2"
+KB_REFRESH_SECONDS = int(os.getenv("KB_REFRESH_SECONDS", "60"))
+FAISS_CACHE_DIR = BASE_DIR / "faiss_cache"
+FAISS_CACHE_DIR.mkdir(exist_ok=True, parents=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  1. LOADERS
+#  0. GENERIC-WORD FILTER
+#  Common English words that must never count as "legal terms": they inflate
+#  term density (routing) and waste the max_terms retrieval slots. Applied once
+#  at KB load, so Aho-Corasick, FAISS, routing and prompts all see the clean KB.
+#  The real fix is also to purge these from the legal_terms collection and gate
+#  the Gemini auto-add path (yes/no "is this a legal term of art?").
 # ══════════════════════════════════════════════════════════════════════════════
 
-def load_knowledge_base(path: Path = KB_PATH) -> list[dict]:
-    """
-    Loads legal_kb.json
-    Each entry must have: { "id": str, "term": str, "text": str }
-    """
-    if not path.exists():
-        raise FileNotFoundError(f"Knowledge base not found: {path}")
-    with open(path, encoding="utf-8") as f:
-        kb = json.load(f)
-    print(f"[RAG] Loaded {len(kb)} KB entries from {path.name}")
-    return kb
+# GENERIC_STOPLIST lives in kb_store.py (shared with kb_updater.py).
+
+def filter_generic(kb: list[dict]) -> list[dict]:
+    kept = [e for e in kb if e["term"].lower().strip() not in GENERIC_STOPLIST]
+    dropped = len(kb) - len(kept)
+    if dropped:
+        print(f"[RAG] Filtered {dropped} generic terms from KB")
+    return kept
 
 
-# Fallback NER patterns if ner.json is missing
-_FALLBACK_NER = {
-    "COURT": [
-        r"\bSupreme Court\b", r"\bHigh Court\b", r"\bDistrict Court\b",
-        r"\bSessions Court\b", r"\bMagistrate Court\b", r"\bTribunal\b",
-    ],
-    "SECTION": [
-        r"\bSection\s+\d+[A-Za-z]?\b", r"\bArticle\s+\d+\b",
-        r"\bClause\s+\d+\b", r"\bRule\s+\d+\b",
-    ],
-    "ACT": [
-        r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+Act(?:,\s*\d{4})?\b",
-        r"\bIPC\b", r"\bCrPC\b", r"\bCPC\b",
-    ],
-    "CASE_REF": [
-        r"\bAIR\s+\d{4}\s+[A-Z]+\s+\d+\b",
-        r"\b\(\d{4}\)\s+\d+\s+SCC\s+\d+\b",
-        r"\bWrit\s+Petition\s+(?:Civil|Criminal)?\s*No\.\s*\d+\b",
-    ],
-    "PERSON_ROLE": [
-        r"\bpetitioner\b", r"\brespondent\b", r"\bappellant\b",
-        r"\bdefendant\b", r"\bplaintiff\b", r"\baccused\b",
-        r"\bcomplainant\b",
-    ],
-    "DATE": [
-        r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|"
-        r"June|July|August|September|October|November|December),?\s+\d{4}\b",
-    ],
+def _specificity(term: str) -> tuple[int, int]:
+    """Rank terms so multi-word / longer (more specific) ones are retrieved first."""
+    return (len(term.split()), len(term))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1. NER PATTERNS (structural regexes — code, not data, so they live here)
+# ══════════════════════════════════════════════════════════════════════════════
+
+NER_PATTERNS = {
+    "COURT": [r"\bSupreme Court\b", r"\bHigh Court\b", r"\bDistrict Court\b",
+              r"\bSessions Court\b", r"\bMagistrate Court\b", r"\bTribunal\b"],
+    "SECTION": [r"\bSection\s+\d+[A-Za-z]?\b", r"\bArticle\s+\d+\b",
+                r"\bClause\s+\d+\b", r"\bRule\s+\d+\b"],
+    "ACT": [r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+Act(?:,\s*\d{4})?\b",
+            r"\bIPC\b", r"\bCrPC\b", r"\bCPC\b"],
+    "CASE_REF": [r"\bAIR\s+\d{4}\s+[A-Z]+\s+\d+\b", r"\b\(\d{4}\)\s+\d+\s+SCC\s+\d+\b"],
+    "PERSON_ROLE": [r"\bpetitioner\b", r"\brespondent\b", r"\bappellant\b",
+                    r"\bdefendant\b", r"\bplaintiff\b", r"\baccused\b", r"\bcomplainant\b"],
+    # DATE is intentionally absent: NER runs on masked text, where dates are already
+    # [[DATE_n]] tokens, so a date pattern here could never fire.
 }
 
+# Honorific list must match masking.py's name pattern — update both together.
+NAME_PATTERN = re.compile(
+    r"\b(?:Mr\.?|Mrs\.?|Ms\.?|Shri\.?|Smt\.?|Sau\.?|Kum\.?|Dr\.?|Adv\.?)\s+"
+    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b"
+)
 
-def load_ner_patterns(path: Path = NER_PATH) -> dict[str, list[str]]:
-    """Loads ner.json. Falls back to built-in patterns if file missing."""
-    if path.exists():
-        with open(path, encoding="utf-8") as f:
-            patterns = json.load(f)
-        print(f"[RAG] Loaded NER patterns: {list(patterns.keys())}")
-        return patterns
-    print("[RAG] ner.json not found — using fallback NER patterns.")
-    return _FALLBACK_NER
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  2. InLegal NER
-#     Extracts named entities (courts, acts, sections etc.) via regex.
-#     In production: swap with fine-tuned InLegal-BERT model.
-# ══════════════════════════════════════════════════════════════════════════════
 
 class InLegalNER:
     def __init__(self, patterns: dict[str, list[str]]):
-        # Compile once at init instead of recompiling every extract() call.
-        self.patterns = {
-            label: [re.compile(p, re.IGNORECASE) for p in regexes]
-            for label, regexes in patterns.items()
-        }
+        # ACT patterns rely on capitalisation ("Maharashtra Rent Control Act"). With
+        # IGNORECASE, [A-Z][a-z]+ matches ANY word, so the pattern would swallow a whole
+        # run of words ending in "act" (e.g. half a sentence). Keep ACT case-sensitive.
+        self.patterns = {label: [re.compile(p, 0 if label == "ACT" else re.IGNORECASE) for p in regexes]
+                         for label, regexes in patterns.items()}
 
     def extract(self, text: str) -> dict[str, list[str]]:
-        """
-        Runs all regex patterns over text.
-        Returns { "COURT": [...], "ACT": [...], ... }
-        Only includes entity types that actually found something.
-        """
         entities: dict[str, list[str]] = {}
         for label, compiled_list in self.patterns.items():
             seen, unique = set(), []
             for pattern in compiled_list:
                 for match in pattern.findall(text):
-                    clean = match.strip()
-                    if clean.lower() not in seen:
+                    clean = match.strip() if isinstance(match, str) else " ".join(match).strip()
+                    if clean and clean.lower() not in seen:
                         seen.add(clean.lower())
                         unique.append(clean)
             if unique:
@@ -124,18 +109,11 @@ class InLegalNER:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  3. AHO-CORASICK MATCHER
-#     Scans extracted text for all legal terms in the KB in one pass O(n).
-#     Terms come from legal_kb.json — add a term there, it's matched here.
+#  2. AHO-CORASICK MATCHER (terms + variants from Mongo)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class AhoCorasickMatcher:
-    """
-    Whole-word matching: "rent" no longer matches inside "current",
-    "fir" inside "first", "bail" inside "available".
-    "will" only matches as a noun ("the will"), not "the tenant will pay".
-    term_to_ids maps each term to ALL its KB ids (used for the glossary).
-    """
+    """Whole-word matching; variants (e.g. 'cognisable' / 'cognizable') map to the same term."""
 
     _NOUN_CONTEXT = {
         "will": {"a", "the", "his", "her", "their", "its", "last", "said",
@@ -146,25 +124,26 @@ class AhoCorasickMatcher:
         self.term_to_ids: dict[str, list[str]] = {}
         self.display: dict[str, str] = {}
         for entry in kb:
-            key = entry["term"].lower().strip()
-            self.term_to_ids.setdefault(key, []).append(entry["id"])
-            self.display.setdefault(key, entry["term"])
+            main = entry["term"].lower().strip()
+            for key in [main] + [v.lower().strip() for v in entry.get("variants", []) if v]:
+                self.term_to_ids.setdefault(key, []).append(entry["id"])
+                self.display.setdefault(key, entry["term"])
 
         self.automaton = ahocorasick.Automaton()
         for key in self.term_to_ids:
             self.automaton.add_word(key, key)
-        self.automaton.make_automaton()
-        print(f"[RAG] Aho-Corasick built with {len(self.term_to_ids)} unique terms.")
+        self.empty = len(self.term_to_ids) == 0
+        if not self.empty:
+            self.automaton.make_automaton()
+        print(f"[RAG] Aho-Corasick built with {len(self.term_to_ids)} keys.")
 
     @staticmethod
     def _is_word_char(c: str) -> bool:
         return c.isalnum() or c == "_"
 
     def find_terms(self, text: str) -> list[str]:
-        """
-        Returns list of legal terms found in text (whole words only).
-        e.g. "habeas corpus", "injunction", "suo motu"
-        """
+        if self.empty:
+            return []
         lower = text.lower()
         found: dict[str, None] = {}
         for end, key in self.automaton.iter(lower):
@@ -178,91 +157,109 @@ class AhoCorasickMatcher:
                 prev = lower[:start].split()
                 if not prev or prev[-1].strip(".,;:'\"()") not in ctx:
                     continue
-            found.setdefault(key, None)
-        return [self.display[k] for k in found]
+            found.setdefault(self.display[key], None)
+        return list(found)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  4. FAISS INDEX
-#     Builds a vector index over all KB entries at startup.
-#     Given a legal term, retrieves the most relevant KB definitions.
+#  3. FAISS INDEX
 # ══════════════════════════════════════════════════════════════════════════════
+
+def cleanup_old_faiss_caches(cache_dir: Path, keep_version: int) -> None:
+    """Delete faiss_v*.index / .meta.pkl files for versions other than keep_version."""
+    for p in Path(cache_dir).glob("faiss_v*"):
+        m = re.match(r"faiss_v(\d+)\.", p.name)
+        if m and int(m.group(1)) != keep_version:
+            try:
+                p.unlink()
+            except OSError as e:
+                print(f"[RAG] Could not remove old cache {p.name}: {e}")
+
 
 class FAISSLegalIndex:
-    MODEL_NAME = "all-MiniLM-L6-v2"   # 80MB, fully offline, no GPU needed
+    def __init__(self, kb: list[dict], model: SentenceTransformer, version: int = None, cache_dir: Path = None):
+        self.kb = kb
+        self.model = model
+        if cache_dir is None:
+            cache_dir = FAISS_CACHE_DIR
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(exist_ok=True, parents=True)
+        texts = [e["text"] for e in kb]
+        if not texts:
+            self.index = None
+            print("[RAG] FAISS: KB empty, index not built.")
+            return
 
-    def __init__(self, kb: list[dict]):
-        self.kb    = kb
-        self.texts = [entry["text"] for entry in kb]
+        cache_path = (cache_dir / f"faiss_v{version}.index") if (cache_dir and version is not None) else None
+        meta_path = (cache_dir / f"faiss_v{version}.meta.pkl") if (cache_dir and version is not None) else None
 
-        print(f"[RAG] Loading embedding model ({self.MODEL_NAME})...")
-        self.model = SentenceTransformer(self.MODEL_NAME)
+        if cache_path and cache_path.exists() and meta_path and meta_path.exists():
+            with open(meta_path, "rb") as f:
+                cached_ids = pickle.load(f)
+            # only reuse if the cached KB id list matches exactly — avoids silently
+            # serving a stale index if version bookkeeping ever drifts
+            if cached_ids == [e["id"] for e in kb]:
+                print(f"[RAG] Loading persisted FAISS index for version {version}")
+                self.index = faiss.read_index(str(cache_path))
+                return
+            print(f"[RAG] Cached index for version {version} doesn't match KB contents — rebuilding")
 
-        print(f"[RAG] Building FAISS index over {len(self.texts)} entries...")
-        embeddings = self.model.encode(self.texts, show_progress_bar=False)
-        embeddings = np.array(embeddings, dtype="float32")
+        print(f"[RAG] Building FAISS index over {len(texts)} entries...")
+        emb = np.array(self.model.encode(texts, show_progress_bar=False, batch_size=64), dtype="float32")
+        self.index = faiss.IndexFlatL2(emb.shape[1])
+        self.index.add(emb)
+        print("[RAG] FAISS index ready.")
 
-        self.index = faiss.IndexFlatL2(embeddings.shape[1])
-        self.index.add(embeddings)
-        print(f"[RAG] FAISS index ready.")
-
-    def retrieve(self, query: str, top_k: int = 2) -> list[dict]:
-        """
-        Returns top_k KB entries most semantically similar to query.
-        Each result: { id, term, text, score }
-        Kept for backward compatibility / single-query use elsewhere.
-        """
-        vec = np.array(
-            self.model.encode([query], show_progress_bar=False),
-            dtype="float32"
-        )
-        distances, indices = self.index.search(vec, top_k)
-        results = []
-        for dist, idx in zip(distances[0], indices[0]):
-            if 0 <= idx < len(self.kb):
-                results.append({**self.kb[idx], "score": float(dist)})
-        return results
+        if cache_path:
+            faiss.write_index(self.index, str(cache_path))
+            with open(meta_path, "wb") as f:
+                pickle.dump([e["id"] for e in kb], f)
 
     def retrieve_batch(self, queries: list[str], top_k: int = 2) -> list[list[dict]]:
-        """
-        Encode + search multiple queries in ONE batched call instead of
-        looping retrieve() per query. This is the actual latency fix —
-        one model.encode() + one index.search() for N queries.
-        """
-        if not queries:
-            return []
+        if not queries or self.index is None:
+            return [[] for _ in queries]
         vecs = np.array(self.model.encode(queries, show_progress_bar=False), dtype="float32")
         distances, indices = self.index.search(vecs, top_k)
-        all_results = []
+        out = []
         for row_d, row_i in zip(distances, indices):
-            results = []
-            for dist, idx in zip(row_d, row_i):
-                if 0 <= idx < len(self.kb):
-                    results.append({**self.kb[idx], "score": float(dist)})
-            all_results.append(results)
-        return all_results
+            out.append([{**self.kb[i], "score": float(d)}
+                        for d, i in zip(row_d, row_i) if 0 <= i < len(self.kb)])
+        return out
+
+    def retrieve(self, query: str, top_k: int = 2) -> list[dict]:
+        return self.retrieve_batch([query], top_k)[0]
+
+
+def _split_for_retrieval(text: str, max_chars: int = 700) -> list[str]:
+    """Split a document into paragraph-sized windows. all-MiniLM-L6-v2 truncates at
+    ~256 tokens, so embedding the whole document only reflects its first ~200 words."""
+    paras = [p.strip() for p in re.split(r"\n\s*\n|\n", text) if p.strip()]
+    windows, cur = [], ""
+    for p in paras:
+        if cur and len(cur) + 1 + len(p) > max_chars:
+            windows.append(cur)
+            cur = p
+        else:
+            cur = f"{cur} {p}".strip()
+    if cur:
+        windows.append(cur)
+    # a single huge paragraph (no newlines): fall back to fixed windows
+    out = []
+    for w in windows:
+        if len(w) <= max_chars * 2:
+            out.append(w)
+        else:
+            out.extend(w[i:i + max_chars] for i in range(0, len(w), max_chars))
+    return out or [text]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  5. SYSTEM PROMPT BUILDER
-#     This is what gets passed to translator.py → injected into Sarvam API.
+#  4. SYSTEM PROMPT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_system_prompt(
-    target_language: str,
-    legal_terms: list[str],
-    entities: dict[str, list[str]],
-    retrieved_chunks: list[dict],
-    max_chunks: int = 4,
-) -> str:
-    """
-    Builds the system prompt for the Sarvam API call.
-
-    Structure:
-      [1] Role + translation instructions
-      [2] Legal terms and entities found in this document
-      [3] FAISS-retrieved definitions for accurate translation
-    """
+def build_system_prompt(target_language: str, legal_terms: list[str],
+                        entities: dict[str, list[str]], retrieved_chunks: list[dict],
+                        max_chunks: int = 4) -> str:
     lines = [
         "You are a professional legal document translator.",
         f"Translate the following text accurately into {target_language}.",
@@ -271,174 +268,159 @@ def build_system_prompt(
         "- Preserve all legal terminology with precision.",
         "- Do NOT translate: proper nouns, case names, section numbers, act names.",
         "- Maintain formal register appropriate for legal documents.",
+        "- Do NOT alter, translate, or remove any token in the form [[NAME_0]], [[DATE_0]], "
+        "[[AMOUNT_0]], etc. — copy them exactly as they appear, in the same position.",
         "- Preserve all numbering, structure, and formatting.",
         "- Keep all numbers, amounts and dates in Arabic numerals (1,2,3 NOT १,२,३).",
         "",
     ]
-
-    # Section 2 — what RAG found in this specific document
     if legal_terms:
-        lines.append(
-            f"LEGAL TERMS IN THIS DOCUMENT ({len(legal_terms)}): "
-            + ", ".join(legal_terms[:15])
-        )
-
+        lines.append(f"LEGAL TERMS IN THIS DOCUMENT ({len(legal_terms)}): " + ", ".join(legal_terms[:15]))
     for label, values in entities.items():
-        if values:
+        if values and label != "LEGAL_TERMS":
             lines.append(f"{label}: {', '.join(values[:4])}")
-
-    # Section 3 — FAISS retrieved definitions
     if retrieved_chunks:
-        lines.append("")
-        lines.append("LEGAL DEFINITIONS FOR REFERENCE (use for accurate translation):")
+        lines += ["", "LEGAL DEFINITIONS FOR REFERENCE (use for accurate translation):"]
         for i, chunk in enumerate(retrieved_chunks[:max_chunks], 1):
-            lines.append(f"  [{i}] {chunk['term'].upper()}: {chunk['text']}")
-
-    lines += [
-        "",
-        f"When a legal term has no direct {target_language} equivalent, "
-        "transliterate it and add a brief parenthetical explanation in "
-        f"{target_language}.",
-    ]
-
+            lines.append(f"  [{i}] {chunk['term'].upper()}: {chunk['text'][:400]}")
+    lines += ["", f"When a legal term has no direct {target_language} equivalent, "
+                  f"transliterate it and add a brief parenthetical explanation in {target_language}."]
     return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  5b. TERM-LEVEL CACHE
-#     Legal terms repeat heavily across documents, so once a term's
-#     retrieval result is known, never re-encode/re-search it.
-#     In-memory only — resets on process restart, no Redis needed.
-# ══════════════════════════════════════════════════════════════════════════════
-
-_term_cache: dict[str, list[dict]] = {}
-
-
-def retrieve_terms_cached(faiss_index: FAISSLegalIndex, terms: list[str], top_k: int = 2) -> dict[str, list[dict]]:
-    """
-    Returns {term: [chunks]} for every term in `terms`.
-    Only uncached terms trigger a (batched) FAISS call; cached ones are free.
-    """
-    uncached = [t for t in terms if t not in _term_cache]
-    if uncached:
-        results = faiss_index.retrieve_batch(uncached, top_k=top_k)
-        for term, res in zip(uncached, results):
-            _term_cache[term] = res
-    return {t: _term_cache[t] for t in terms}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  6. RAG PIPELINE — main class
-#     Call rag.process(extracted_text, target_language)
-#     Get back system_prompt → pass to translator.py
+#  5. RAG PIPELINE (hot-reloading)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class RAGPipeline:
-    """
-    Wires together: NER → Aho-Corasick → FAISS → system prompt.
-    Does NOT do language detection (that's translator.py).
-    Does NOT call Sarvam API (that's translator.py).
-    """
+    def __init__(self, ner_path=None):
+        # ner_path kept only so existing callers don't break; patterns now live in code.
+        self.ner = InLegalNER(NER_PATTERNS)
+        self.FAISS_CACHE_DIR = FAISS_CACHE_DIR
+        self.FAISS_CACHE_DIR.mkdir(exist_ok=True, parents=True)
+        print(f"[RAG] Loading embedding model ({MODEL_NAME})...")
+        self.model = SentenceTransformer(MODEL_NAME)   # loaded once, reused on every rebuild
+        self._lock = threading.Lock()
+        self._rebuilding = False
+        self._last_check = 0.0
+        self._term_cache: dict[str, list[dict]] = {}
+        self._build(kb_store.get_version())
+        self._detect_pool = ThreadPoolExecutor(max_workers=2)
 
-    def __init__(self, kb_path: Path = KB_PATH, ner_path: Path = NER_PATH):
-        kb              = load_knowledge_base(kb_path)
-        ner_patterns    = load_ner_patterns(ner_path)
-        self.ner        = InLegalNER(ner_patterns)
-        self.aho        = AhoCorasickMatcher(kb)
-        self.faiss      = FAISSLegalIndex(kb)
+    # -- build / reload --------------------------------------------------------
 
-    def process(
-        self,
-        extracted_text: str,
-        target_language: str,
-        top_k: int = 2,
-        max_terms: int = 5,
-        translated_text: str = None,
-    ) -> dict:
-        """
-        Args:
-            extracted_text:  text from extractor.py
-            target_language: e.g. "Hindi" — comes from Flutter dropdown
-            top_k:           FAISS results per term
-            max_terms:       max terms sent to FAISS (keep low for speed)
-
-        Returns:
-            {
-              "legal_terms":      ["affidavit", "injunction", ...],
-              "entities":         {"COURT": [...], "ACT": [...], ...},
-              "retrieved_chunks": [{id, term, text, score}, ...],
-              "system_prompt":    "You are a professional legal..."
+    def _build(self, version: int) -> None:
+        kb = kb_store.load_approved_entries()
+        print(f"[RAG] Loaded {len(kb)} approved KB terms from MongoDB (version {version})")
+        kb = filter_generic(kb)
+        aho = AhoCorasickMatcher(kb)
+        index = FAISSLegalIndex(kb, self.model, version=version, cache_dir=FAISS_CACHE_DIR)
+        # per-term surface forms + vetted translations, for glossary substitution
+        term_info = {
+            e["term"].lower().strip(): {
+                "forms": [e["term"]] + [v for v in e.get("variants", []) if v],
+                "translations": e.get("translations") or {},
             }
+            for e in kb
+        }
+        with self._lock:
+            self.aho, self.faiss, self.version = aho, index, version
+            self.term_info = term_info
+            self._term_cache = {}
+        cleanup_old_faiss_caches(FAISS_CACHE_DIR, keep_version=version)
 
-        → Pass result["system_prompt"] directly to translator.py
-        """
-        analysis_text = translated_text if translated_text else extracted_text
-        print(f"[RAG DEBUG] analysis_text preview: {analysis_text[:200]}")
+    def _rebuild_bg(self, version: int) -> None:
+        try:
+            self._build(version)
+        except Exception as e:
+            print(f"[RAG] Background rebuild failed: {e}")
+        finally:
+            self._rebuilding = False
 
-        # Step 1 — InLegal NER
-        entities = self.ner.extract(analysis_text)
+    def refresh_if_changed(self) -> None:
+        """Cheap check (one tiny Mongo read, at most every KB_REFRESH_SECONDS)."""
+        t = time.time()
+        if self._rebuilding or t - self._last_check < KB_REFRESH_SECONDS:
+            return
+        self._last_check = t
+        try:
+            v = kb_store.get_version()
+        except Exception as e:
+            print(f"[RAG] Version check failed: {e}")
+            return
+        if v != self.version:
+            print(f"[RAG] KB changed ({self.version} → {v}); rebuilding in background")
+            self._rebuilding = True
+            threading.Thread(target=self._rebuild_bg, args=(v,), daemon=True).start()
 
-        # Step 2 — Aho-Corasick
-        legal_terms = self.aho.find_terms(analysis_text)
+    # -- per-request -----------------------------------------------------------
+    @timed("rag_process")
+    def process(self, extracted_text: str, target_language: str, top_k: int = 2,
+                max_terms: int = 5, translated_text: str = None,
+                lang_key: str | None = None) -> dict:
+        self.refresh_if_changed()
+        with self._lock:
+            aho, index, cache, term_info = self.aho, self.faiss, self._term_cache, self.term_info
+
+        analysis_text = translated_text or extracted_text
+        masked_text, name_mapping = mask_sensitive_terms(analysis_text)
+
+        future_entities = self._detect_pool.submit(self.ner.extract, masked_text)
+        future_terms = self._detect_pool.submit(aho.find_terms, masked_text)
+        entities = future_entities.result()
+        legal_terms = future_terms.result()
+        if legal_terms:
+            entities["LEGAL_TERMS"] = legal_terms
         print(f"[RAG] Terms found: {legal_terms}")
 
-        # Step 3 — FAISS retrieval
-        # 3a. Full-document query: always fresh, never cached (text differs every request).
-        doc_level_results = self.faiss.retrieve_batch([analysis_text], top_k=2)
-        doc_chunks = doc_level_results[0] if doc_level_results else []
+        # Glossary substitution inputs: found terms that have a vetted translation
+        # for the target language (lang_key e.g. 'hi', 'mr').
+        term_translations: dict[str, dict] = {}
+        if lang_key:
+            for t in legal_terms:
+                info = term_info.get(t.lower().strip())
+                tr = ((info or {}).get("translations") or {}).get(lang_key, "")
+                if tr and tr.strip():
+                    term_translations[t] = {"forms": info["forms"], "translation": tr.strip()}
+            missing = [t for t in legal_terms if t not in term_translations]
+            print(f"[RAG] Glossary: {len(term_translations)} term(s) will be substituted "
+                  f"for '{lang_key}'" + (f"; no translation yet for {missing}" if missing else ""))
 
-        # 3b. Per-term queries: go through the term cache — repeated legal terms
-        #     across documents cost zero extra encode/search calls after the first time.
-        terms_to_query = legal_terms[:max_terms]
-        term_results = retrieve_terms_cached(self.faiss, terms_to_query, top_k=top_k)
+        # Document-level context: one retrieval per paragraph window (top-1 each),
+        # not one embedding of the whole (truncated) document.
+        windows = _split_for_retrieval(masked_text)
+        doc_chunks = [r[0] for r in index.retrieve_batch(windows, top_k=1) if r]
 
-        retrieved: list[dict] = []
-        seen_ids: set[str] = set()
-        for chunk in doc_chunks:
+        # Spend the max_terms slots on the most specific terms, not match order.
+        terms_to_query = sorted(legal_terms, key=_specificity, reverse=True)[:max_terms]
+        uncached = [t for t in terms_to_query if t not in cache]
+        for term, res in zip(uncached, index.retrieve_batch(uncached, top_k=top_k)):
+            cache[term] = res
+
+        retrieved, seen_ids = [], set()
+        # term-specific definitions first so they survive the max_chunks cut in the prompt
+        for chunk in [c for t in terms_to_query for c in cache.get(t, [])] + doc_chunks:
             if chunk["id"] not in seen_ids:
                 retrieved.append(chunk)
                 seen_ids.add(chunk["id"])
-        for term in terms_to_query:
-            for chunk in term_results.get(term, []):
-                if chunk["id"] not in seen_ids:
-                    retrieved.append(chunk)
-                    seen_ids.add(chunk["id"])
-
-        # Step 4 — Build system prompt → goes to translator.py → Sarvam API
-        system_prompt = build_system_prompt(
-            target_language  = target_language,
-            legal_terms      = legal_terms,
-            entities         = entities,
-            retrieved_chunks = retrieved,
-        )
 
         return {
-            "legal_terms":      legal_terms,
-            "entities":         entities,
+            "legal_terms": legal_terms,
+            "entities": entities,
             "retrieved_chunks": retrieved,
-            "system_prompt":    system_prompt,
+            "system_prompt": build_system_prompt(target_language, legal_terms, entities, retrieved),
+            "masked_text": masked_text,
+            "name_mapping": name_mapping,   # pass through to translator.py; unmask_sensitive_terms() on its output
+            "term_translations": term_translations,   # {term: {"forms": [...], "translation": str}}
         }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  QUICK TEST
-# ══════════════════════════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
     pipeline = RAGPipeline()
-
-    sample = """
-    This affidavit is filed before the Hon'ble High Court of Madras in
-    connection with Writ Petition Civil No. 1234 of 2024. The petitioner
-    submits that the respondent violated the injunction granted under Section 9
-    of the Arbitration and Conciliation Act, 1996. The accused has committed
-    contempt of court. Habeas corpus petition is filed as a suo motu action.
-    """
-
+    sample = ("This affidavit is filed before the Hon'ble High Court in Writ Petition Civil No. 1234 "
+              "of 2024. The petitioner submits that the respondent violated the injunction. The accused "
+              "is charged with a cognizable offence and seeks anticipatory bail.")
     result = pipeline.process(sample, target_language="Hindi")
-
-    print(f"\nLegal Terms     : {result['legal_terms']}")
-    print(f"Entities        : {result['entities']}")
-    print(f"Retrieved chunks: {len(result['retrieved_chunks'])}")
-    print(f"\nSYSTEM PROMPT:\n{'-'*50}")
+    print("Terms:", result["legal_terms"])
+    print("Entities:", result["entities"])
     print(result["system_prompt"])

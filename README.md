@@ -140,7 +140,7 @@ pip install -r requirements.txt
 
 ### Environment Variables
 
-Create a `.env` file at the project root:
+Create `nyayalipi_backend/.env`:
 
 ```env
 SARVAM_API_KEY=your_sarvam_api_key
@@ -150,16 +150,26 @@ FAISS_INDEX_PATH=./data/faiss_index
 ### Run the Backend
 
 ```bash
-cd backend
-uvicorn main:app --reload
+cd nyayalipi_backend
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+For a physical phone, connect the phone and computer to the same network, then run the Flutter app with the computer's current local IPv4 address:
+
+```bash
+cd nyayalipi_app
+flutter run --dart-define=API_BASE_URL=http://192.168.1.10:8000
+```
+
+Replace `192.168.1.10` with the computer's address on that network. The address can change when switching Wi-Fi networks.
+
+For an Android emulator, the default API address is `http://10.0.2.2:8000`; this emulator-only alias routes to the host computer. Start the backend with the command above before launching the app.
 
 ### Run the Frontend
 
 ```bash
-cd frontend
-npm install
-npm start
+cd nyayalipi_app
+flutter run
 ```
 
 ---

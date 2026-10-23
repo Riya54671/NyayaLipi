@@ -9,6 +9,7 @@ import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
+import '../widgets/profile_button.dart';
 
 class VoiceOutputScreen extends StatefulWidget {
   final String sourceLanguage;
@@ -184,6 +185,7 @@ Future<void> _handleDownload() async {
                                 color: AppTheme.primaryBlue)),
                       ),
                       const SizedBox(width: 8),
+                      const ProfileButton(),
                     ],
                   ).animate().fadeIn(duration: 500.ms),
 
@@ -220,7 +222,7 @@ Future<void> _handleDownload() async {
                         padding: const EdgeInsets.symmetric(vertical: 28),
                         decoration: BoxDecoration(
                           border: Border.all(
-                              color: AppTheme.primaryBlue.withOpacity(0.4),
+                              color: AppTheme.primaryBlue.withValues(alpha: 0.4),
                               width: 1.5),
                           borderRadius: BorderRadius.circular(12),
                         ),
@@ -268,11 +270,11 @@ Future<void> _handleDownload() async {
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       border: Border.all(
-                          color: AppTheme.primaryBlue.withOpacity(0.3)),
+                          color: AppTheme.primaryBlue.withValues(alpha: 0.3)),
                       borderRadius: BorderRadius.circular(12),
                       color: AppTheme.white,
                       boxShadow: [BoxShadow(
-                          color: Colors.black.withOpacity(0.04),
+                          color: Colors.black.withValues(alpha: 0.04),
                           blurRadius: 8, offset: const Offset(0, 2))],
                     ),
                     child: _highlightedText(widget.translatedText),
@@ -355,10 +357,10 @@ Future<void> _handleDownload() async {
                             decoration: BoxDecoration(
                               color: _isAudioReady
                                   ? AppTheme.primaryBlue
-                                  : AppTheme.lightBlue.withOpacity(0.5),
+                                  : AppTheme.lightBlue.withValues(alpha: 0.5),
                               shape: BoxShape.circle,
                               boxShadow: [BoxShadow(
-                                  color: AppTheme.primaryBlue.withOpacity(0.3),
+                                  color: AppTheme.primaryBlue.withValues(alpha: 0.3),
                                   blurRadius: 12,
                                   offset: const Offset(0, 4))],
                             ),
@@ -448,7 +450,7 @@ Future<void> _handleDownload() async {
             width: 52, height: 52,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(color: AppTheme.textGrey.withOpacity(0.3)),
+              border: Border.all(color: AppTheme.textGrey.withValues(alpha: 0.3)),
             ),
             child: Icon(icon, size: 22, color: AppTheme.textDark),
           ),
@@ -461,7 +463,7 @@ Future<void> _handleDownload() async {
   Widget _circleIcon(IconData icon) => Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          border: Border.all(color: AppTheme.textGrey.withOpacity(0.3)),
+          border: Border.all(color: AppTheme.textGrey.withValues(alpha: 0.3)),
           shape: BoxShape.circle,
         ),
         child: Icon(icon, size: 18),
@@ -517,7 +519,7 @@ Future<void> _handleDownload() async {
               controller: controller,
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: widget.glossary.length,
-              separatorBuilder: (_, __) =>
+              separatorBuilder: (_, _) =>
                   Divider(height: 1, color: Colors.grey.shade200),
               itemBuilder: (_, i) => _glossaryTile(widget.glossary[i]),
             ),
@@ -527,7 +529,7 @@ Future<void> _handleDownload() async {
     );
   }
 
-    Widget _glossaryCard() {
+  Widget _glossaryCard() {
     return GestureDetector(
       onTap: _showFullGlossary,
       child: Container(
@@ -536,7 +538,7 @@ Future<void> _handleDownload() async {
         decoration: BoxDecoration(
           color: AppTheme.backgroundBlue,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppTheme.primaryBlue.withOpacity(0.2)),
+          border: Border.all(color: AppTheme.primaryBlue.withValues(alpha: 0.2)),
         ),
         child: Row(children: [
           const Icon(Icons.menu_book_rounded,

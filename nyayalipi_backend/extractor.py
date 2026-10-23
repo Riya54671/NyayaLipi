@@ -127,25 +127,104 @@ def _preprocess_image(img):
     return img
 
 def extract_pdf_lines_with_boxes(path: Path) -> list[dict]:
-    """Returns [{page, bbox:(x0,y0,x1,y1), text}, ...] per line, reading order."""
+    """
+    Returns [{page, bbox:(x0,y0,x1,y1), text}, ...] per line, reading order.
+    Pages with an embedded text layer use PyMuPDF directly.
+    Pages with no text layer (scanned images) are rasterized and OCR'd in parallel.
+    """
     import fitz
-    lines = []
+    import pytesseract
+    from pytesseract import Output
+    from PIL import Image
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+
+    pytesseract.pytesseract.tesseract_cmd = r"C:/Users/riya1/AppData/Local/Programs/Tesseract-OCR/tesseract.exe"
+    lang = _get_available_langs(pytesseract)
+
+    text_lines = {}      # page_num -> list of line dicts, for pages with a real text layer
+    ocr_pages = []        # page_nums that need OCR
+
     with fitz.open(str(path)) as doc:
+        page_pixmaps = {}  # page_num -> rendered image bytes, captured while doc is open
+
         for page_num, page in enumerate(doc):
             data = page.get_text("dict")
-            for block in data["blocks"]:
-                for line in block.get("lines", []):
-                    spans = line.get("spans", [])
-                    if not spans:
-                        continue
-                    text = "".join(s["text"] for s in spans).strip()
-                    if not text:
-                        continue
-                    x0 = min(s["bbox"][0] for s in spans)
-                    y0 = min(s["bbox"][1] for s in spans)
-                    x1 = max(s["bbox"][2] for s in spans)
-                    y1 = max(s["bbox"][3] for s in spans)
-                    lines.append({"page": page_num, "bbox": (x0, y0, x1, y1), "text": text})
+            page_has_text = any(
+                span["text"].strip()
+                for block in data["blocks"]
+                for line in block.get("lines", [])
+                for span in line.get("spans", [])
+            )
+
+            if page_has_text:
+                lines = []
+                for block in data["blocks"]:
+                    for line in block.get("lines", []):
+                        spans = line.get("spans", [])
+                        if not spans:
+                            continue
+                        text = "".join(s["text"] for s in spans).strip()
+                        if not text:
+                            continue
+                        x0 = min(s["bbox"][0] for s in spans)
+                        y0 = min(s["bbox"][1] for s in spans)
+                        x1 = max(s["bbox"][2] for s in spans)
+                        y1 = max(s["bbox"][3] for s in spans)
+                        lines.append({"page": page_num, "bbox": (x0, y0, x1, y1), "text": text})
+                text_lines[page_num] = lines
+            else:
+                # Render now, while the document is still open — OCR itself
+                # happens later, in parallel, outside this loop.
+                pix = page.get_pixmap(dpi=300)
+                page_pixmaps[page_num] = pix.tobytes("png")
+                ocr_pages.append(page_num)
+
+    def _ocr_one_page(page_num):
+        img = Image.open(io.BytesIO(page_pixmaps[page_num]))
+        img = _preprocess_image(img)
+
+        ocr_data = pytesseract.image_to_data(
+            img, lang=lang, config="--psm 6 --oem 3", output_type=Output.DICT
+        )
+
+        line_groups = {}
+        for i in range(len(ocr_data["text"])):
+            word = ocr_data["text"][i].strip()
+            if not word:
+                continue
+            key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
+            line_groups.setdefault(key, []).append(i)
+
+        page_lines = []
+        for key in sorted(line_groups.keys()):
+            idxs = line_groups[key]
+            words = [ocr_data["text"][i] for i in idxs]
+            lefts = [ocr_data["left"][i] for i in idxs]
+            tops = [ocr_data["top"][i] for i in idxs]
+            rights = [ocr_data["left"][i] + ocr_data["width"][i] for i in idxs]
+            bottoms = [ocr_data["top"][i] + ocr_data["height"][i] for i in idxs]
+            page_lines.append({
+                "page": page_num,
+                "bbox": (min(lefts), min(tops), max(rights), max(bottoms)),
+                "text": " ".join(words),
+            })
+        return page_num, page_lines
+
+    if ocr_pages:
+        print(f"[Extractor] OCR'ing {len(ocr_pages)} scanned page(s) in parallel")
+        workers = min(len(ocr_pages), 4)  # Tesseract is CPU-heavy, don't over-subscribe
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for page_num, page_lines in executor.map(_ocr_one_page, ocr_pages):
+                text_lines[page_num] = page_lines
+
+    # Reassemble in correct page order
+    lines = []
+    for page_num in sorted(text_lines.keys()):
+        lines.extend(text_lines[page_num])
+
+    print(lines)
+
     return lines
 
 

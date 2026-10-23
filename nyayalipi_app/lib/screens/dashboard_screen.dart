@@ -9,9 +9,9 @@ import 'dart:convert';
 import '../theme/app_theme.dart';
 import 'source_language_screen.dart';
 import 'voice_output_screen.dart';
-import 'landing_screen.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../widgets/profile_button.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -32,10 +32,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _showNotification = false;
   String _notificationMessage = '';
   bool _notificationIsError = false;
-   Uint8List? _fileBytes; // add this with other state variables
+  Uint8List? _fileBytes; // add this with other state variables
   String? _username;
-
-  static const String _backendBaseUrl = 'http://10.92.168.64:8000';
 
   @override
   void initState() {
@@ -45,144 +43,159 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  Future<void> _logout() async {
-    await AuthService.logOut();
-    if (!mounted) return;
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const LandingScreen()),
-      (route) => false,
-    );
-  }
-
   final List<String> _languages = [
-    'Hindi', 'Marathi', 'Tamil', 'Telugu',
-    'English', 'Kannada', 'Bengali', 'Gujarati', 'Punjabi',
+    'Hindi',
+    'Marathi',
+    'Tamil',
+    'Telugu',
+    'English',
+    'Kannada',
+    'Bengali',
+    'Gujarati',
+    'Punjabi',
   ];
 
   final Map<String, String> _langCode = {
-    'Hindi': 'hi-IN',   'Marathi': 'mr-IN', 'Tamil': 'ta-IN',
-    'Telugu': 'te-IN',  'English': 'en-IN',  'Kannada': 'kn-IN',
-    'Bengali': 'bn-IN', 'Gujarati': 'gu-IN', 'Punjabi': 'pa-IN',
+    'Hindi': 'hi-IN',
+    'Marathi': 'mr-IN',
+    'Tamil': 'ta-IN',
+    'Telugu': 'te-IN',
+    'English': 'en-IN',
+    'Kannada': 'kn-IN',
+    'Bengali': 'bn-IN',
+    'Gujarati': 'gu-IN',
+    'Punjabi': 'pa-IN',
   };
   Future<void> _detectLanguage() async {
-  if (_pickedFile == null) {
-    print('[DEBUG] _pickedFile is null, skipping detect');
-    return;
+    final file = _pickedFile;
+    final bytes = _fileBytes;
+    if (file == null && bytes == null) {
+      print('[DEBUG] No readable file path or bytes; skipping detect');
+      _showBanner('Could not read the selected document.', isError: true);
+      setState(() => _detectedLanguage = 'Unknown');
+      return;
+    }
+    print('[DEBUG] Starting language detection for: $_fileName');
+    setState(() => _detectedLanguage = 'Detecting...');
+    try {
+      print('[DEBUG] Calling ApiService.detectLanguage...');
+      final detected = await ApiService.detectLanguage(
+        file: file,
+        bytes: bytes,
+        filename: _fileName ?? 'document',
+      );
+      print('[DEBUG] Detected: $detected');
+      setState(() => _detectedLanguage = detected);
+    } catch (e, stack) {
+      print('[DEBUG] Detection error: $e');
+      print('[DEBUG] Stack: $stack');
+      _showBanner('Detection failed: $e', isError: true);
+      setState(() => _detectedLanguage = 'Unknown');
+    }
   }
-  print('[DEBUG] Starting detect, file: ${_pickedFile!.path}');
-  print('[DEBUG] File exists: ${await _pickedFile!.exists()}');
-  setState(() => _detectedLanguage = 'Detecting...');
-  try {
-    print('[DEBUG] Calling ApiService.detectLanguage...');
-    final detected = await ApiService.detectLanguage(_pickedFile!);
-    print('[DEBUG] Detected: $detected');
-    setState(() => _detectedLanguage = detected);
-  } catch (e, stack) {
-    print('[DEBUG] Detection error: $e');
-    print('[DEBUG] Stack: $stack');
-    _showBanner('Detection failed: $e', isError: true);
-    setState(() => _detectedLanguage = 'Unknown');
-  }
-}
 
   Future<void> _pickFile() async {
-  try {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['pdf', 'png', 'jpg', 'jpeg', 'docx'],
-      withData: true,  // ← CHANGE false TO true (needed for web)
-    );
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf', 'png', 'jpg', 'jpeg', 'docx'],
+        withData: true, // ← CHANGE false TO true (needed for web)
+      );
 
-    if (result != null) {
-      final pickedFile = result.files.single;
+      if (result != null) {
+        final pickedFile = result.files.single;
 
-      setState(() {
-        _fileName   = pickedFile.name;
-        _pickedFile = pickedFile.path != null ? File(pickedFile.path!) : null;
-        _fileBytes  = pickedFile.bytes; // ← store raw bytes for web
-        _languageConfirmed = null;
-        _targetLanguage    = null;
-      });
+        setState(() {
+          _fileName = pickedFile.name;
+          _pickedFile = pickedFile.path != null ? File(pickedFile.path!) : null;
+          _fileBytes = pickedFile.bytes; // ← store raw bytes for web
+          _languageConfirmed = null;
+          _targetLanguage = null;
+        });
 
-      _showBanner('Document uploaded: ${pickedFile.name}');
-      await _detectLanguage();
+        _showBanner('Document uploaded: ${pickedFile.name}');
+        await _detectLanguage();
+      }
+    } catch (e) {
+      _showBanner('Could not pick file: $e', isError: true);
     }
-  } catch (e) {
-    _showBanner('Could not pick file: $e', isError: true);
   }
-}
 
   void _removeFile() => setState(() {
-        _fileName          = null;
-        _pickedFile        = null;
-        _languageConfirmed = null;
-        _targetLanguage    = null;
-      });
+    _fileName = null;
+    _pickedFile = null;
+    _languageConfirmed = null;
+    _targetLanguage = null;
+  });
 
   void _handleYes() {
     setState(() => _languageConfirmed = true);
   }
 
   void _handleNo() {
-  setState(() => _languageConfirmed = false);
+    setState(() => _languageConfirmed = false);
 
-  Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => SourceLanguageScreen(
-        fileName: _fileName ?? 'demo_document.pdf',
-        pickedFile: _pickedFile,
-        backendBaseUrl: _backendBaseUrl,
-        langCode: _langCode,
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SourceLanguageScreen(
+          fileName: _fileName ?? 'demo_document.pdf',
+          pickedFile: _pickedFile,
+          langCode: _langCode,
+        ),
       ),
-    ),
-  );
-}
-  Future<void> _handleSubmit() async {
-  if (_targetLanguage == null) return;
-  if (_pickedFile == null) {               // ← ADD guard
-    _showBanner('File not available', isError: true);
-    return;
-  }
-  setState(() => _isLoading = true);
-  try {
-    final result = await ApiService.translateDocument(
-      file: _pickedFile!,                  // ← clean, no bytes
-      sourceLanguage: _detectedLanguage,
-      targetLanguage: _targetLanguage!,
-      generateAudio: true,
     );
-    if (mounted) {
-      setState(() => _isLoading = false);
-      print('[DEBUG] docUrl: ${ApiService.BASE_URL}${result['document_download_url'] ?? ''}');
-      print('[DEBUG] audioUrl: ${result['audio_download_url']}');
-      Navigator.push(
-  context,
-  MaterialPageRoute(
-    builder: (_) => VoiceOutputScreen(
-      sourceLanguage: _detectedLanguage,
-      targetLanguage: _targetLanguage!,
-      translatedText: result['translated_text_preview'] ?? '',
-      audioBase64: result['audio_download_url'] != null
-          ? '${ApiService.BASE_URL}${result['audio_download_url']}'
-          : '',
-      docUrl: '${ApiService.BASE_URL}${result['document_download_url'] ?? ''}',
-      glossary: result['glossary'] ?? [],
-    ),
-  ),
-);
-    }
-  } catch (e) {
-    setState(() => _isLoading = false);
-    _showBanner('Error: $e', isError: true);
   }
-}
+
+  Future<void> _handleSubmit() async {
+    if (_targetLanguage == null) return;
+    if (_pickedFile == null) {
+      // ← ADD guard
+      _showBanner('File not available', isError: true);
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      final result = await ApiService.translateDocument(
+        file: _pickedFile!, // ← clean, no bytes
+        sourceLanguage: _detectedLanguage,
+        targetLanguage: _targetLanguage!,
+        generateAudio: true,
+      );
+      if (mounted) {
+        setState(() => _isLoading = false);
+        print(
+          '[DEBUG] docUrl: ${ApiService.BASE_URL}${result['document_download_url'] ?? ''}',
+        );
+        print('[DEBUG] audioUrl: ${result['audio_download_url']}');
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => VoiceOutputScreen(
+              sourceLanguage: _detectedLanguage,
+              targetLanguage: _targetLanguage!,
+              translatedText: result['translated_text_preview'] ?? '',
+              audioBase64: result['audio_download_url'] != null
+                  ? '${ApiService.BASE_URL}${result['audio_download_url']}'
+                  : '',
+              docUrl:
+                  '${ApiService.BASE_URL}${result['document_download_url'] ?? ''}',
+              glossary: result['glossary'] ?? [],
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _showBanner('Error: $e', isError: true);
+    }
+  }
+
   void _showBanner(String msg, {bool isError = false}) {
     setState(() {
       _notificationMessage = msg;
       _notificationIsError = isError;
-      _showNotification    = true;
+      _showNotification = true;
     });
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) setState(() => _showNotification = false);
@@ -191,9 +204,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final bool submitEnabled = _languageConfirmed == true &&
-        _targetLanguage != null &&
-        !_isLoading;
+    final bool submitEnabled =
+        _languageConfirmed == true && _targetLanguage != null && !_isLoading;
 
     return Scaffold(
       backgroundColor: AppTheme.white,
@@ -201,12 +213,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Stack(
           children: [
             SingleChildScrollView(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -215,27 +225,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                                _username != null && _username!.isNotEmpty
-                                    ? 'Welcome, $_username!'
-                                    : 'Welcome!',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: GoogleFonts.poppins(
-                                    fontSize: 26,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppTheme.primaryBlue)),
-                            Text('Lets translate your documents.',
-                                style: GoogleFonts.poppins(
-                                    fontSize: 13,
-                                    color: AppTheme.textGrey)),
+                              _username != null && _username!.isNotEmpty
+                                  ? 'Welcome, $_username!'
+                                  : 'Welcome!',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.poppins(
+                                fontSize: 26,
+                                fontWeight: FontWeight.w800,
+                                color: AppTheme.primaryBlue,
+                              ),
+                            ),
+                            Text(
+                              'Lets translate your documents.',
+                              style: GoogleFonts.poppins(
+                                fontSize: 13,
+                                color: AppTheme.textGrey,
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                      IconButton(
-                        onPressed: _logout,
-                        icon: const Icon(Icons.logout_rounded),
-                        color: AppTheme.textGrey,
-                        tooltip: 'Log out',
+                      ProfileButton(
+                        onReturn: () => AuthService.getUsername().then((v) {
+                          if (mounted) setState(() => _username = v);
+                        }),
                       ),
                     ],
                   ).animate().fadeIn(duration: 500.ms),
@@ -249,15 +263,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Upload Document',
-                              style: GoogleFonts.poppins(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 15)),
                           Text(
-                              'Select and upload document of your choice',
-                              style: GoogleFonts.poppins(
-                                  fontSize: 11,
-                                  color: AppTheme.textGrey)),
+                            'Upload Document',
+                            style: GoogleFonts.poppins(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
+                          Text(
+                            'Select and upload document of your choice',
+                            style: GoogleFonts.poppins(
+                              fontSize: 11,
+                              color: AppTheme.textGrey,
+                            ),
+                          ),
                         ],
                       ),
                     ],
@@ -271,40 +290,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
-                          color: AppTheme.backgroundBlue,
-                          borderRadius: BorderRadius.circular(16)),
+                        color: AppTheme.backgroundBlue,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
                       child: Container(
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 24),
+                        padding: const EdgeInsets.symmetric(vertical: 24),
                         decoration: BoxDecoration(
                           border: Border.all(
-                              color: AppTheme.primaryBlue
-                                  .withOpacity(0.4),
-                              width: 1.5),
+                            color: AppTheme.primaryBlue.withValues(alpha: 0.4),
+                            width: 1.5,
+                          ),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Column(
                           children: [
-                            const Icon(Icons.upload_outlined,
-                                size: 36, color: AppTheme.textDark),
+                            const Icon(
+                              Icons.upload_outlined,
+                              size: 36,
+                              color: AppTheme.textDark,
+                            ),
                             const SizedBox(height: 12),
                             Row(
-                              mainAxisAlignment:
-                                  MainAxisAlignment.center,
+                              mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Container(
                                   padding: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 10),
+                                    horizontal: 16,
+                                    vertical: 10,
+                                  ),
                                   decoration: BoxDecoration(
-                                      color: AppTheme.textDark,
-                                      borderRadius:
-                                          BorderRadius.circular(8)),
+                                    color: AppTheme.textDark,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
                                   child: Text(
                                     _fileName ?? 'Upload Document',
                                     style: GoogleFonts.poppins(
-                                        color: AppTheme.white,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w500),
+                                      color: AppTheme.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
                                   ),
                                 ),
                                 if (_fileName != null) ...[
@@ -314,14 +338,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     child: Container(
                                       padding: const EdgeInsets.all(8),
                                       decoration: BoxDecoration(
-                                          color: Colors.grey.shade300,
-                                          borderRadius:
-                                              BorderRadius.circular(
-                                                  6)),
+                                        color: Colors.grey.shade300,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
                                       child: const Icon(
-                                          Icons.delete_outline,
-                                          size: 18,
-                                          color: Colors.black54),
+                                        Icons.delete_outline,
+                                        size: 18,
+                                        color: Colors.black54,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -338,33 +362,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Container(
                     decoration: BoxDecoration(
                       border: Border.all(
-                          color: AppTheme.primaryBlue.withOpacity(0.3)),
+                        color: AppTheme.primaryBlue.withValues(alpha: 0.3),
+                      ),
                       borderRadius: BorderRadius.circular(12),
                       color: AppTheme.white,
                     ),
                     child: Column(
                       children: [
                         Padding(
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 12),
-                          child: Text('Detected Language',
-                              style: GoogleFonts.poppins(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 15)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Text(
+                            'Detected Language',
+                            style: GoogleFonts.poppins(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
                         ),
                         Container(
                           width: double.infinity,
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 12),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                           decoration: const BoxDecoration(
-                              color: AppTheme.primaryBlue),
+                            color: AppTheme.primaryBlue,
+                          ),
                           child: Text(
                             _detectedLanguage,
                             textAlign: TextAlign.center,
                             style: GoogleFonts.poppins(
-                                color: AppTheme.white,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 15),
+                              color: AppTheme.white,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
                           ),
                         ),
                         Row(
@@ -374,48 +402,53 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 onTap: _handleYes,
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
-                                      vertical: 12),
+                                    vertical: 12,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: _languageConfirmed == true
                                         ? AppTheme.darkBlue
                                         : AppTheme.primaryBlue,
-                                    borderRadius:
-                                        const BorderRadius.only(
-                                            bottomLeft:
-                                                Radius.circular(11)),
+                                    borderRadius: const BorderRadius.only(
+                                      bottomLeft: Radius.circular(11),
+                                    ),
                                   ),
-                                  child: Text('YES',
-                                      textAlign: TextAlign.center,
-                                      style: GoogleFonts.poppins(
-                                          color: AppTheme.white,
-                                          fontWeight: FontWeight.w700,
-                                          fontSize: 14)),
+                                  child: Text(
+                                    'YES',
+                                    textAlign: TextAlign.center,
+                                    style: GoogleFonts.poppins(
+                                      color: AppTheme.white,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
-                            Container(
-                                width: 1, color: AppTheme.white),
+                            Container(width: 1, color: AppTheme.white),
                             Expanded(
                               child: GestureDetector(
                                 onTap: _handleNo,
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
-                                      vertical: 12),
+                                    vertical: 12,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: _languageConfirmed == false
                                         ? AppTheme.darkBlue
                                         : AppTheme.primaryBlue,
-                                    borderRadius:
-                                        const BorderRadius.only(
-                                            bottomRight:
-                                                Radius.circular(11)),
+                                    borderRadius: const BorderRadius.only(
+                                      bottomRight: Radius.circular(11),
+                                    ),
                                   ),
-                                  child: Text('NO',
-                                      textAlign: TextAlign.center,
-                                      style: GoogleFonts.poppins(
-                                          color: AppTheme.white,
-                                          fontWeight: FontWeight.w700,
-                                          fontSize: 14)),
+                                  child: Text(
+                                    'NO',
+                                    textAlign: TextAlign.center,
+                                    style: GoogleFonts.poppins(
+                                      color: AppTheme.white,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
@@ -431,17 +464,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
                       decoration: BoxDecoration(
                         border: Border.all(
-                            color:
-                                AppTheme.primaryBlue.withOpacity(0.4)),
+                          color: AppTheme.primaryBlue.withValues(alpha: 0.4),
+                        ),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: Text(_detectedLanguage,
-                          style: GoogleFonts.poppins(
-                              fontSize: 14,
-                              color: AppTheme.textDark)),
+                      child: Text(
+                        _detectedLanguage,
+                        style: GoogleFonts.poppins(
+                          fontSize: 14,
+                          color: AppTheme.textDark,
+                        ),
+                      ),
                     ).animate().fadeIn(duration: 300.ms),
                     const SizedBox(height: 12),
                   ],
@@ -449,8 +487,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _buildDropdown(
                     hint: 'Target Language',
                     value: _targetLanguage,
-                    onChanged: (val) =>
-                        setState(() => _targetLanguage = val),
+                    onChanged: (val) => setState(() => _targetLanguage = val),
                   ).animate().fadeIn(delay: 250.ms),
 
                   const SizedBox(height: 8),
@@ -461,22 +498,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       child: Text(
                         'Tap YES or NO above to continue',
                         style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            color: AppTheme.textGrey
-                                .withOpacity(0.7)),
+                          fontSize: 12,
+                          color: AppTheme.textGrey.withValues(alpha: 0.7),
+                        ),
                       ),
                     ),
 
-                  if (_languageConfirmed == true &&
-                      _targetLanguage == null)
+                  if (_languageConfirmed == true && _targetLanguage == null)
                     Padding(
                       padding: const EdgeInsets.only(top: 4, left: 4),
                       child: Text(
                         'Select a target language to enable Submit',
                         style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            color: AppTheme.textGrey
-                                .withOpacity(0.7)),
+                          fontSize: 12,
+                          color: AppTheme.textGrey.withValues(alpha: 0.7),
+                        ),
                       ),
                     ),
 
@@ -488,25 +524,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       onPressed: submitEnabled ? _handleSubmit : null,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppTheme.primaryBlue,
-                        disabledBackgroundColor:
-                            AppTheme.lightBlue.withOpacity(0.4),
+                        disabledBackgroundColor: AppTheme.lightBlue.withValues(
+                          alpha: 0.4,
+                        ),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 16),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
                       child: _isLoading
                           ? const SizedBox(
                               height: 20,
                               width: 20,
                               child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2))
-                          : Text('Submit',
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : Text(
+                              'Submit',
                               style: GoogleFonts.poppins(
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 16,
-                                  color: AppTheme.white)),
+                                fontWeight: FontWeight.w700,
+                                fontSize: 16,
+                                color: AppTheme.white,
+                              ),
+                            ),
                     ),
                   ).animate().fadeIn(delay: 300.ms),
 
@@ -525,7 +567,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                     decoration: BoxDecoration(
                       color: _notificationIsError
                           ? Colors.redAccent
@@ -543,19 +587,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: Text(_notificationMessage,
-                              style: GoogleFonts.poppins(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500)),
+                          child: Text(
+                            _notificationMessage,
+                            style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
                         ),
                       ],
                     ),
                   ),
-                )
-                    .animate()
-                    .fadeIn(duration: 300.ms)
-                    .slideY(begin: -0.5),
+                ).animate().fadeIn(duration: 300.ms).slideY(begin: -0.5),
               ),
           ],
         ),
@@ -571,41 +615,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
-        border:
-            Border.all(color: AppTheme.primaryBlue.withOpacity(0.4)),
+        border: Border.all(color: AppTheme.primaryBlue.withValues(alpha: 0.4)),
         borderRadius: BorderRadius.circular(10),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
           isExpanded: true,
-          hint: Text(hint,
-              style: GoogleFonts.poppins(
-                  fontSize: 14, color: AppTheme.textGrey)),
+          hint: Text(
+            hint,
+            style: GoogleFonts.poppins(fontSize: 14, color: AppTheme.textGrey),
+          ),
           value: value,
           items: _languages
-              .map((lang) => DropdownMenuItem(
-                    value: lang,
-                    child: Text(lang,
-                        style: GoogleFonts.poppins(fontSize: 14)),
-                  ))
+              .map(
+                (lang) => DropdownMenuItem(
+                  value: lang,
+                  child: Text(lang, style: GoogleFonts.poppins(fontSize: 14)),
+                ),
+              )
               .toList(),
           onChanged: onChanged,
-          icon: const Icon(Icons.keyboard_arrow_down,
-              color: AppTheme.primaryBlue),
+          icon: const Icon(
+            Icons.keyboard_arrow_down,
+            color: AppTheme.primaryBlue,
+          ),
         ),
       ),
     );
   }
 
   Widget _circleIcon(IconData icon) => Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          border: Border.all(
-              color: AppTheme.textGrey.withOpacity(0.3)),
-          shape: BoxShape.circle,
-        ),
-        child: Icon(icon, size: 18),
-      );
-
-  
+    padding: const EdgeInsets.all(8),
+    decoration: BoxDecoration(
+      border: Border.all(color: AppTheme.textGrey.withValues(alpha: 0.3)),
+      shape: BoxShape.circle,
+    ),
+    child: Icon(icon, size: 18),
+  );
 }

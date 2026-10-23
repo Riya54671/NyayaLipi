@@ -8,39 +8,48 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'auth_service.dart';
 
 class ApiService {
-  // ── Change this if testing on a real phone (use your PC's local IP) ──────
-  // Emulator/Chrome: keep as 127.0.0.1
-  // Real Android phone on same WiFi: change to e.g. http://192.168.1.5:8000
-  //static const String BASE_URL = 'http://10.92.168.64:8000';10.103.122.64
-    //static const String BASE_URL = 'http://10.103.122.3:8000';//for testing on chrome
-    static const String BASE_URL = 'http://10.103.122.64:8000';
+  // Override for a different network with:
+  // flutter run --dart-define=API_BASE_URL=http://<computer-ip>:8000
+  static const String BASE_URL = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://10.153.24.64:8000',
+  );
 
 
   // ── 1. DETECT LANGUAGE ────────────────────────────────────────────────────
   // POST /detect-language
   // Sends the file → backend extracts text → Sarvam detects language
   // Returns: { "language": "Tamil" }
- static Future<String> detectLanguage(File file) async {
+  static Future<String> detectLanguage({
+    File? file,
+    Uint8List? bytes,
+    required String filename,
+  }) async {
     final request = http.MultipartRequest(
       'POST',
       Uri.parse('$BASE_URL/detect-language'),
     );
-    // Attach the logged-in user's JWT so the backend can record this file
-    // under their account.
-    request.headers.addAll(await AuthService.authHeader());
+    debugPrint('[API] POST ${request.url}');
 
-    // File attachment
-    request.files.add(
-      await http.MultipartFile.fromPath('file', file.path),
-    );
+    if (file != null) {
+      request.files.add(await http.MultipartFile.fromPath('file', file.path));
+    } else if (bytes != null) {
+      request.files.add(
+        http.MultipartFile.fromBytes('file', bytes, filename: filename),
+      );
+    } else {
+      throw Exception('Selected document is not available to upload.');
+    }
 
     final streamedResponse = await request.send()
-        .timeout(const Duration(seconds: 30)); // ← ADD THIS
+        .timeout(const Duration(seconds: 30));
     final response = await http.Response.fromStream(streamedResponse);
+    debugPrint('[API] POST ${request.url} -> ${response.statusCode}');
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
@@ -86,7 +95,11 @@ class ApiService {
     final response = await http.Response.fromStream(streamedResponse);
 
     if (response.statusCode == 401) {
-      throw Exception('Your session has expired. Please log in again.');
+      final body = jsonDecode(response.body);
+      final detail = body is Map ? body['detail'] : null;
+      throw Exception(
+        detail?.toString() ?? 'Authentication failed. Please log in again.',
+      );
     }
 
     if (response.statusCode == 200) {
