@@ -5,3 +5,4 @@ outputs/
 venv/
 flutter/
 nyayalipi_backend/indictrans_test/
+env.yaml

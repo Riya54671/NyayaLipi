@@ -1,0 +1,8 @@
+.env
+env.yaml
+__pycache__/
+kb/
+benchmark.py
+run_pipeline.py
+fill_translations.py
+indictrans_test/
